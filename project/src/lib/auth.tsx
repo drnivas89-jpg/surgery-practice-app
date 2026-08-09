@@ -68,12 +68,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = async (email: string, password: string) => {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
-    return { error: error?.message ?? null };
+    if (error) {
+      const msg = error.message.toLowerCase();
+      if (msg.includes('email not confirmed')) {
+        return {
+          error: "Your email hasn't been confirmed yet. Check your inbox for a confirmation link, or use \"Forgot password?\" below to reset your password — that will also confirm your account.",
+        };
+      }
+      if (msg.includes('invalid login credentials')) {
+        return {
+          error: 'Incorrect email or password. If you\'re not sure, use "Forgot password?" below to set a new one.',
+        };
+      }
+      return { error: error.message };
+    }
+    return { error: null };
   };
 
   const signUp = async (email: string, password: string) => {
     const { error } = await supabase.auth.signUp({ email, password });
-    return { error: error?.message ?? null };
+    if (error) {
+      const msg = error.message.toLowerCase();
+      if (msg.includes('already registered') || msg.includes('already exists')) {
+        return { error: 'An account with this email already exists. Try signing in, or use "Forgot password?" if you don\'t remember your password.' };
+      }
+      return { error: error.message };
+    }
+    return { error: null };
   };
 
   const signOut = async () => {
