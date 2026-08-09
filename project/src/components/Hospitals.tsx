@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import { Hospital, MonthlyEntry, Attendance, Patient } from '@/lib/types';
-import { formatCurrency, formatDate } from '@/lib/helpers';
-import { Building2, Plus, Trash2, X, Calendar, Pencil, Users, Activity, Clock, CheckCircle2, LogOut, Zap, Search, UserRound, Stethoscope, ArrowRight } from 'lucide-react';
+import { Hospital, MonthlyEntry, Attendance, Patient, ClassEntry } from '@/lib/types';
+import { formatCurrency, formatDate, uploadImage } from '@/lib/helpers';
+import { Building2, Plus, Trash2, X, Calendar, Pencil, Users, Activity, Clock, CheckCircle2, LogOut, Zap, Search, UserRound, Stethoscope, ArrowRight, GraduationCap, Upload } from 'lucide-react';
 import PatientForm from './PatientForm';
+import PatientRegistrationWizard from './PatientRegistrationWizard';
 
 export default function Hospitals() {
   const { user } = useAuth();
@@ -26,6 +27,20 @@ export default function Hospitals() {
   const [entryHospitalId, setEntryHospitalId] = useState('');
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
 
+  // Classes / Teaching
+  const [classes, setClasses] = useState<ClassEntry[]>([]);
+  const [showClassForm, setShowClassForm] = useState(false);
+  const [editingClassId, setEditingClassId] = useState<string | null>(null);
+  const [cHospital, setCHospital] = useState('');
+  const [cDate, setCDate] = useState(new Date().toISOString().split('T')[0]);
+  const [cType, setCType] = useState('');
+  const [cAudience, setCAudience] = useState('');
+  const [cTopic, setCTopic] = useState('');
+  const [cNotes, setCNotes] = useState('');
+  const [cPptFile, setCPptFile] = useState<File | null>(null);
+  const [cSaving, setCSaving] = useState(false);
+  const [cError, setCError] = useState<string | null>(null);
+
   // Attendance form
   const [attHospital, setAttHospital] = useState('');
   const [attDate, setAttDate] = useState(new Date().toISOString().split('T')[0]);
@@ -46,16 +61,18 @@ export default function Hospitals() {
   const [eNotes, setENotes] = useState('');
 
   const load = async () => {
-    const [{ data: h }, { data: me }, { data: att }, { data: pts }] = await Promise.all([
+    const [{ data: h }, { data: me }, { data: att }, { data: pts }, { data: cls }] = await Promise.all([
       supabase.from('hospitals').select('*').order('name'),
       supabase.from('monthly_entries').select('*, hospital:hospitals(*)').order('entry_date', { ascending: false }),
       supabase.from('attendance').select('*, hospital:hospitals(*)').order('attendance_date', { ascending: false }),
       supabase.from('patients').select('*, hospital:hospitals(*)').order('created_at', { ascending: false }),
+      supabase.from('classes').select('*, hospital:hospitals(*)').order('class_date', { ascending: false }),
     ]);
     setHospitals(h || []);
     setEntries(me || []);
     setAttendance(att || []);
     setPatients(pts || []);
+    setClasses(cls || []);
     setLoading(false);
   };
 
@@ -167,6 +184,66 @@ export default function Hospitals() {
     load();
   };
 
+  const resetClassForm = () => {
+    setEditingClassId(null);
+    setCHospital(''); setCDate(new Date().toISOString().split('T')[0]);
+    setCType(''); setCAudience(''); setCTopic(''); setCNotes('');
+    setCPptFile(null); setCError(null);
+  };
+
+  const openEditClass = (c: ClassEntry) => {
+    setEditingClassId(c.id);
+    setCHospital(c.hospital_id || '');
+    setCDate(c.class_date ? c.class_date.substring(0, 10) : new Date().toISOString().split('T')[0]);
+    setCType(c.class_type || '');
+    setCAudience(c.audience || '');
+    setCTopic(c.topic || '');
+    setCNotes(c.notes || '');
+    setCPptFile(null);
+    setCError(null);
+    setShowClassForm(true);
+  };
+
+  const handleSaveClass = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    setCSaving(true);
+    setCError(null);
+
+    const payload: Record<string, unknown> = {
+      hospital_id: cHospital || null,
+      class_date: cDate || null,
+      class_type: cType,
+      audience: cAudience,
+      topic: cTopic,
+      notes: cNotes,
+    };
+
+    if (cPptFile) {
+      payload.ppt_path = await uploadImage(cPptFile, user.id, 'class-ppt');
+    } else if (!editingClassId) {
+      payload.ppt_path = null;
+    }
+
+    if (editingClassId) {
+      const { error } = await supabase.from('classes').update(payload).eq('id', editingClassId);
+      if (error) { setCError(error.message); setCSaving(false); return; }
+    } else {
+      const { error } = await supabase.from('classes').insert({ ...payload, user_id: user.id });
+      if (error) { setCError(error.message); setCSaving(false); return; }
+    }
+    setCSaving(false);
+    setShowClassForm(false);
+    resetClassForm();
+    load();
+  };
+
+  const handleDeleteClass = async (id: string) => {
+    if (!confirm('Delete this class entry?')) return;
+    await supabase.from('classes').delete().eq('id', id);
+    load();
+  };
+
   const matchedPatients = patientSearch.trim().length >= 2
     ? patients.filter((p) => {
         const q = patientSearch.toLowerCase();
@@ -191,6 +268,20 @@ export default function Hospitals() {
   };
 
   if (showPatientForm) {
+    if (!editingPatient) {
+      return (
+        <PatientRegistrationWizard
+          hospitals={hospitals}
+          defaultHospitalId={entryHospitalId || undefined}
+          onDone={() => {
+            setShowPatientForm(false);
+            setPatientSearch('');
+            load();
+          }}
+          onCancel={() => setShowPatientForm(false)}
+        />
+      );
+    }
     return (
       <PatientForm
         hospitals={hospitals}
@@ -257,6 +348,9 @@ export default function Hospitals() {
         <div className="relative mb-3">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
           <input
+            id="hosp-patient-search"
+            name="patientSearch"
+            aria-label="Search existing patient by name, phone, or unique ID"
             type="text"
             value={patientSearch}
             onChange={(e) => setPatientSearch(e.target.value)}
@@ -322,6 +416,63 @@ export default function Hospitals() {
         </div>
         {hospitals.length === 0 && (
           <p className="text-xs text-amber-600 mt-3">Add a hospital first to enable patient entry.</p>
+        )}
+      </div>
+
+      {/* Classes / Teaching */}
+      <div className="bg-white rounded-xl border border-slate-200 p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <GraduationCap className="w-4 h-4 text-violet-500" />
+            <h2 className="font-semibold text-slate-700">Classes / Teaching</h2>
+          </div>
+          <button
+            onClick={() => { resetClassForm(); setShowClassForm(true); }}
+            className="flex items-center gap-1.5 text-xs font-medium text-violet-600 bg-violet-50 hover:bg-violet-100 px-3 py-1.5 rounded-lg transition"
+          >
+            <Plus className="w-3.5 h-3.5" /> Add Class
+          </button>
+        </div>
+        {classes.length === 0 ? (
+          <p className="text-sm text-slate-400 py-4 text-center">No classes logged yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-100 text-left text-xs text-slate-500 uppercase tracking-wide">
+                  <th className="px-3 py-2 font-medium">Date</th>
+                  <th className="px-3 py-2 font-medium">Hospital</th>
+                  <th className="px-3 py-2 font-medium">Type</th>
+                  <th className="px-3 py-2 font-medium">Audience</th>
+                  <th className="px-3 py-2 font-medium">Topic</th>
+                  <th className="px-3 py-2 font-medium">PPT</th>
+                  <th className="px-3 py-2 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {classes.map((c) => (
+                  <tr key={c.id} className="border-b border-slate-50 hover:bg-slate-50 transition group">
+                    <td className="px-3 py-2.5 text-slate-600">{formatDate(c.class_date)}</td>
+                    <td className="px-3 py-2.5 text-slate-600">{c.hospital?.name || '—'}</td>
+                    <td className="px-3 py-2.5 text-slate-600">{c.class_type || '—'}</td>
+                    <td className="px-3 py-2.5 text-slate-600">{c.audience || '—'}</td>
+                    <td className="px-3 py-2.5 text-slate-700 font-medium">{c.topic || '—'}</td>
+                    <td className="px-3 py-2.5 text-slate-400">{c.ppt_path ? 'Uploaded' : '—'}</td>
+                    <td className="px-3 py-2.5">
+                      <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition">
+                        <button onClick={() => openEditClass(c)} className="text-slate-300 hover:text-sky-500 transition p-1">
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button onClick={() => handleDeleteClass(c.id)} className="text-slate-300 hover:text-red-500 transition p-1">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 
@@ -488,8 +639,10 @@ export default function Hospitals() {
         <Modal title="Add Hospital" onClose={() => setShowAdd(false)}>
           <form onSubmit={handleAddHospital} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Hospital Name</label>
+              <label htmlFor="hosp-name" className="block text-sm font-medium text-slate-600 mb-1.5">Hospital Name</label>
               <input
+                id="hosp-name"
+                name="hospitalName"
                 type="text"
                 required
                 value={name}
@@ -513,8 +666,10 @@ export default function Hospitals() {
           <form onSubmit={handleSaveEntry} className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Hospital *</label>
+                <label htmlFor="entry-hospital" className="block text-sm font-medium text-slate-600 mb-1.5">Hospital *</label>
                 <select
+                  id="entry-hospital"
+                  name="hospital"
                   required
                   value={eHospital}
                   onChange={(e) => setEHospital(e.target.value)}
@@ -527,8 +682,10 @@ export default function Hospitals() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Date *</label>
+                <label htmlFor="entry-date" className="block text-sm font-medium text-slate-600 mb-1.5">Date *</label>
                 <input
+                  id="entry-date"
+                  name="entryDate"
                   type="date"
                   required
                   value={eDate}
@@ -537,26 +694,26 @@ export default function Hospitals() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">OP Patients</label>
-                <input type="number" value={eOp} onChange={(e) => setEOp(e.target.value)} className="form-input" placeholder="0" />
+                <label htmlFor="entry-op" className="block text-sm font-medium text-slate-600 mb-1.5">OP Patients</label>
+                <input id="entry-op" name="opPatients" type="number" value={eOp} onChange={(e) => setEOp(e.target.value)} className="form-input" placeholder="0" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Opinion Entry</label>
-                <input type="number" value={eOpinion} onChange={(e) => setEOpinion(e.target.value)} className="form-input" placeholder="0" />
+                <label htmlFor="entry-opinion" className="block text-sm font-medium text-slate-600 mb-1.5">Opinion Entry</label>
+                <input id="entry-opinion" name="opinionPatients" type="number" value={eOpinion} onChange={(e) => setEOpinion(e.target.value)} className="form-input" placeholder="0" />
                 <p className="text-xs text-slate-400 mt-1">Opinion / consult-only visits. IP admissions are now tracked via structured OP/IP Patient Entry above.</p>
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Fees Generated (INR)</label>
-                <input type="number" step="0.01" value={eFeesGen} onChange={(e) => setEFeesGen(e.target.value)} className="form-input" placeholder="0" />
+                <label htmlFor="entry-fees-gen" className="block text-sm font-medium text-slate-600 mb-1.5">Fees Generated (INR)</label>
+                <input id="entry-fees-gen" name="feesGenerated" type="number" step="0.01" value={eFeesGen} onChange={(e) => setEFeesGen(e.target.value)} className="form-input" placeholder="0" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Fees Received (INR)</label>
-                <input type="number" step="0.01" value={eFeesRec} onChange={(e) => setEFeesRec(e.target.value)} className="form-input" placeholder="0" />
+                <label htmlFor="entry-fees-rec" className="block text-sm font-medium text-slate-600 mb-1.5">Fees Received (INR)</label>
+                <input id="entry-fees-rec" name="feesReceived" type="number" step="0.01" value={eFeesRec} onChange={(e) => setEFeesRec(e.target.value)} className="form-input" placeholder="0" />
               </div>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
-              <input type="text" value={eNotes} onChange={(e) => setENotes(e.target.value)} className="form-input" placeholder="Optional..." />
+              <label htmlFor="entry-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
+              <input id="entry-notes" name="notes" type="text" value={eNotes} onChange={(e) => setENotes(e.target.value)} className="form-input" placeholder="Optional..." />
             </div>
             {error && <p className="text-sm text-red-600">{error}</p>}
             <button type="submit" className="w-full py-2.5 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 transition">
@@ -574,18 +731,18 @@ export default function Hospitals() {
         <Modal title="Add Attendance" onClose={() => setShowAttendance(false)}>
           <form onSubmit={handleSaveAttendance} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Hospital *</label>
-              <select required value={attHospital} onChange={(e) => setAttHospital(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none bg-white">
+              <label htmlFor="att-hospital" className="block text-sm font-medium text-slate-600 mb-1.5">Hospital *</label>
+              <select id="att-hospital" name="hospital" required value={attHospital} onChange={(e) => setAttHospital(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none bg-white">
                 <option value="">Select hospital...</option>
                 {hospitals.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Date *</label>
-              <input type="date" required value={attDate} onChange={(e) => setAttDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" />
+              <label htmlFor="att-date" className="block text-sm font-medium text-slate-600 mb-1.5">Date *</label>
+              <input id="att-date" name="attendanceDate" type="date" required value={attDate} onChange={(e) => setAttDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Status *</label>
+              <span className="block text-sm font-medium text-slate-600 mb-1.5">Status *</span>
               <div className="grid grid-cols-3 gap-2">
                 <button type="button" onClick={() => setAttStatus('present')} className={`flex flex-col items-center gap-1.5 p-3 rounded-lg border-2 transition ${attStatus === 'present' ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200 hover:border-slate-300'}`}>
                   <CheckCircle2 className={`w-5 h-5 ${attStatus === 'present' ? 'text-emerald-600' : 'text-slate-400'}`} />
@@ -603,13 +760,13 @@ export default function Hospitals() {
             </div>
             {attStatus === 'leave' && (
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Type of Leave *</label>
-                <input type="text" required value={attLeaveType} onChange={(e) => setAttLeaveType(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="e.g. Casual, Sick, Earned..." />
+                <label htmlFor="att-leave-type" className="block text-sm font-medium text-slate-600 mb-1.5">Type of Leave *</label>
+                <input id="att-leave-type" name="leaveType" type="text" required value={attLeaveType} onChange={(e) => setAttLeaveType(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="e.g. Casual, Sick, Earned..." />
               </div>
             )}
             {attStatus === 'extra_duty' && (
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Extra Duty Type *</label>
+                <label htmlFor="att-extra-type" className="block text-sm font-medium text-slate-600 mb-1.5">Extra Duty Type *</label>
                 <div className="flex gap-2 mb-2">
                   {['extra', 'col', 'others'].map((t) => (
                     <button key={t} type="button" onClick={() => setAttExtraType(t)} className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${attExtraType === t ? 'bg-amber-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
@@ -617,15 +774,66 @@ export default function Hospitals() {
                     </button>
                   ))}
                 </div>
-                <input type="text" value={attExtraType} onChange={(e) => setAttExtraType(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="Or type your own..." />
+                <input id="att-extra-type" name="extraDutyType" type="text" value={attExtraType} onChange={(e) => setAttExtraType(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="Or type your own..." />
               </div>
             )}
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
-              <input type="text" value={attNotes} onChange={(e) => setAttNotes(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="Optional..." />
+              <label htmlFor="att-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
+              <input id="att-notes" name="notes" type="text" value={attNotes} onChange={(e) => setAttNotes(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="Optional..." />
             </div>
             {attError && <p className="text-sm text-red-600">{attError}</p>}
             <button type="submit" className="w-full py-2.5 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 transition">Save Attendance</button>
+          </form>
+        </Modal>
+      )}
+
+      {/* Add/Edit Class Modal */}
+      {showClassForm && (
+        <Modal title={editingClassId ? 'Edit Class' : 'Add Class'} onClose={() => { setShowClassForm(false); resetClassForm(); }}>
+          <form onSubmit={handleSaveClass} className="space-y-4">
+            <div>
+              <label htmlFor="c-hospital" className="block text-sm font-medium text-slate-600 mb-1.5">Hospital</label>
+              <select id="c-hospital" name="hospital" value={cHospital} onChange={(e) => setCHospital(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 bg-white focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none">
+                <option value="">Not hospital-specific</option>
+                {hospitals.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="c-date" className="block text-sm font-medium text-slate-600 mb-1.5">Date</label>
+              <input id="c-date" name="classDate" type="date" value={cDate} onChange={(e) => setCDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="c-type" className="block text-sm font-medium text-slate-600 mb-1.5">Type of Class</label>
+                <input id="c-type" name="classType" type="text" value={cType} onChange={(e) => setCType(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="e.g. CME, Lecture, Workshop" />
+              </div>
+              <div>
+                <label htmlFor="c-audience" className="block text-sm font-medium text-slate-600 mb-1.5">Class To Whom</label>
+                <input id="c-audience" name="audience" type="text" value={cAudience} onChange={(e) => setCAudience(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="e.g. MBBS students" />
+              </div>
+            </div>
+            <div>
+              <label htmlFor="c-topic" className="block text-sm font-medium text-slate-600 mb-1.5">Topic</label>
+              <input id="c-topic" name="topic" type="text" value={cTopic} onChange={(e) => setCTopic(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" />
+            </div>
+            <div>
+              <label htmlFor="c-ppt" className="block text-sm font-medium text-slate-600 mb-1.5">Class PPT (optional)</label>
+              <label htmlFor="c-ppt" className="flex items-center gap-2 px-3 py-2.5 rounded-lg border border-dashed border-slate-300 text-sm text-slate-500 cursor-pointer hover:border-sky-400 hover:text-sky-600 transition">
+                <Upload className="w-4 h-4" />
+                {cPptFile ? cPptFile.name : editingClassId ? 'Replace uploaded file' : 'Upload PPT / PDF'}
+              </label>
+              <input id="c-ppt" name="ppt" type="file" accept=".ppt,.pptx,.pdf" className="hidden" onChange={(e) => setCPptFile(e.target.files?.[0] || null)} />
+            </div>
+            <div>
+              <label htmlFor="c-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
+              <input id="c-notes" name="notes" type="text" value={cNotes} onChange={(e) => setCNotes(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="Optional..." />
+            </div>
+            {cError && (
+              <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 p-3 rounded-lg">{cError}</div>
+            )}
+            <button type="submit" disabled={cSaving} className="w-full py-2.5 bg-violet-600 text-white rounded-lg font-medium hover:bg-violet-700 transition disabled:opacity-60">
+              {cSaving ? 'Saving...' : editingClassId ? 'Save Changes' : 'Add Class'}
+            </button>
           </form>
         </Modal>
       )}

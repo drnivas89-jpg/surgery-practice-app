@@ -219,6 +219,9 @@ export default function Revenue() {
       {/* Filters */}
       <div className="flex flex-wrap gap-3">
         <select
+          id="rev-filter-hospital"
+          name="filterHospital"
+          aria-label="Filter by hospital"
           value={selectedHospital}
           onChange={(e) => setSelectedHospital(e.target.value)}
           className="px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none"
@@ -229,6 +232,9 @@ export default function Revenue() {
           ))}
         </select>
         <select
+          id="rev-filter-month"
+          name="filterMonth"
+          aria-label="Filter by month"
           value={selectedMonth}
           onChange={(e) => setSelectedMonth(e.target.value)}
           className="px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none"
@@ -439,8 +445,10 @@ export default function Revenue() {
             </div>
             <form onSubmit={handleAddPayment} className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Hospital *</label>
+                <label htmlFor="pay-hospital" className="block text-sm font-medium text-slate-600 mb-1.5">Hospital *</label>
                 <select
+                  id="pay-hospital"
+                  name="hospital"
                   required
                   value={payHospital}
                   onChange={(e) => {
@@ -456,10 +464,12 @@ export default function Revenue() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">
+                <label htmlFor="pay-patient" className="block text-sm font-medium text-slate-600 mb-1.5">
                   Patient <span className="text-slate-400 font-normal">(optional)</span>
                 </label>
                 <select
+                  id="pay-patient"
+                  name="patient"
                   value={payPatient}
                   onChange={(e) => setPayPatient(e.target.value)}
                   className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none bg-white"
@@ -475,8 +485,10 @@ export default function Revenue() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Amount (INR) *</label>
+                <label htmlFor="pay-amount" className="block text-sm font-medium text-slate-600 mb-1.5">Amount (INR) *</label>
                 <input
+                  id="pay-amount"
+                  name="amount"
                   type="number"
                   step="0.01"
                   required
@@ -486,8 +498,10 @@ export default function Revenue() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Payment Date *</label>
+                <label htmlFor="pay-date" className="block text-sm font-medium text-slate-600 mb-1.5">Payment Date *</label>
                 <input
+                  id="pay-date"
+                  name="paymentDate"
                   type="date"
                   required
                   value={payDate}
@@ -496,8 +510,10 @@ export default function Revenue() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
+                <label htmlFor="pay-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
                 <input
+                  id="pay-notes"
+                  name="notes"
                   type="text"
                   value={payNotes}
                   onChange={(e) => setPayNotes(e.target.value)}
@@ -525,8 +541,10 @@ export default function Revenue() {
             </div>
             <form onSubmit={handleSaveEntry} className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Hospital *</label>
+                <label htmlFor="rev-entry-hospital" className="block text-sm font-medium text-slate-600 mb-1.5">Hospital *</label>
                 <select
+                  id="rev-entry-hospital"
+                  name="hospital"
                   required
                   value={entryHospital}
                   onChange={(e) => setEntryHospital(e.target.value)}
@@ -539,8 +557,10 @@ export default function Revenue() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Date *</label>
+                <label htmlFor="rev-entry-date" className="block text-sm font-medium text-slate-600 mb-1.5">Date *</label>
                 <input
+                  id="rev-entry-date"
+                  name="entryDate"
                   type="date"
                   required
                   value={entryDate}
@@ -550,8 +570,10 @@ export default function Revenue() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1.5">OP Patients</label>
+                  <label htmlFor="rev-entry-op" className="block text-sm font-medium text-slate-600 mb-1.5">OP Patients</label>
                   <input
+                    id="rev-entry-op"
+                    name="opPatients"
                     type="number"
                     value={entryOp}
                     onChange={(e) => setEntryOp(e.target.value)}
@@ -560,8 +582,10 @@ export default function Revenue() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1.5">IP Patients</label>
+                  <label htmlFor="rev-entry-ip" className="block text-sm font-medium text-slate-600 mb-1.5">IP Patients</label>
                   <input
+                    id="rev-entry-ip"
+                    name="ipPatients"
                     type="number"
                     value={entryIp}
                     onChange={(e) => setEntryIp(e.target.value)}
@@ -572,8 +596,10 @@ export default function Revenue() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1.5">Fees Generated</label>
+                  <label htmlFor="rev-entry-fees-gen" className="block text-sm font-medium text-slate-600 mb-1.5">Fees Generated</label>
                   <input
+                    id="rev-entry-fees-gen"
+                    name="feesGenerated"
                     type="number"
                     step="0.01"
                     value={entryFeesGen}
@@ -583,8 +609,10 @@ export default function Revenue() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1.5">Fees Received</label>
+                  <label htmlFor="rev-entry-fees-rec" className="block text-sm font-medium text-slate-600 mb-1.5">Fees Received</label>
                   <input
+                    id="rev-entry-fees-rec"
+                    name="feesReceived"
                     type="number"
                     step="0.01"
                     value={entryFeesRec}
@@ -595,8 +623,10 @@ export default function Revenue() {
                 </div>
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
+                <label htmlFor="rev-entry-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
                 <input
+                  id="rev-entry-notes"
+                  name="notes"
                   type="text"
                   value={entryNotes}
                   onChange={(e) => setEntryNotes(e.target.value)}

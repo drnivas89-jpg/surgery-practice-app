@@ -11,9 +11,11 @@ import ConsentProformas from '@/components/ConsentProformas';
 import SurgicalLogbook from '@/components/SurgicalLogbook';
 import COLDashboard from '@/components/COLDashboard';
 import Sharing from '@/components/Sharing';
+import Publications from '@/components/Publications';
+import ResetPassword from '@/components/ResetPassword';
 
 function AppContent() {
-  const { session, loading } = useAuth();
+  const { session, loading, passwordRecovery } = useAuth();
   const [view, setView] = useState<View>('dashboard');
 
   if (loading) {
@@ -22,6 +24,10 @@ function AppContent() {
         <div className="w-8 h-8 border-2 border-sky-200 border-t-sky-600 rounded-full animate-spin" />
       </div>
     );
+  }
+
+  if (passwordRecovery) {
+    return <ResetPassword />;
   }
 
   if (!session) {
@@ -39,6 +45,7 @@ function AppContent() {
       {view === 'logbook' && <SurgicalLogbook />}
       {view === 'col' && <COLDashboard />}
       {view === 'sharing' && <Sharing />}
+      {view === 'publications' && <Publications />}
     </Layout>
   );
 }

@@ -103,23 +103,23 @@ export default function PatientForm({ hospitals, editPatient, onDone, onCancel, 
           <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Demographics</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Hospital *</label>
-              <select value={hospitalId} onChange={(e) => setHospitalId(e.target.value)} required className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition bg-white">
+              <label htmlFor="p-hospital" className="block text-sm font-medium text-slate-600 mb-1.5">Hospital *</label>
+              <select id="p-hospital" name="hospital" value={hospitalId} onChange={(e) => setHospitalId(e.target.value)} required className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition bg-white">
                 <option value="">Select hospital...</option>
                 {hospitals.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Patient Name *</label>
-              <input type="text" required value={name} onChange={(e) => setName(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" />
+              <label htmlFor="p-name" className="block text-sm font-medium text-slate-600 mb-1.5">Patient Name *</label>
+              <input id="p-name" name="patientName" autoComplete="name" type="text" required value={name} onChange={(e) => setName(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Age</label>
-              <input type="number" value={age} onChange={(e) => setAge(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" />
+              <label htmlFor="p-age" className="block text-sm font-medium text-slate-600 mb-1.5">Age</label>
+              <input id="p-age" name="age" type="number" value={age} onChange={(e) => setAge(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Sex</label>
-              <select value={sex} onChange={(e) => setSex(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition bg-white">
+              <label htmlFor="p-sex" className="block text-sm font-medium text-slate-600 mb-1.5">Sex</label>
+              <select id="p-sex" name="sex" value={sex} onChange={(e) => setSex(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition bg-white">
                 <option value="">Select...</option>
                 <option value="male">Male</option>
                 <option value="female">Female</option>
@@ -127,14 +127,14 @@ export default function PatientForm({ hospitals, editPatient, onDone, onCancel, 
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5 flex items-center gap-1.5">
+              <label htmlFor="p-mobile" className="block text-sm font-medium text-slate-600 mb-1.5 flex items-center gap-1.5">
                 <Phone className="w-3.5 h-3.5 text-slate-400" /> Mobile Number
               </label>
-              <input type="tel" value={mobileNumber} onChange={(e) => setMobileNumber(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" placeholder="e.g. 9876543210" />
+              <input id="p-mobile" name="mobileNumber" autoComplete="tel" type="tel" value={mobileNumber} onChange={(e) => setMobileNumber(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" placeholder="e.g. 9876543210" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Fees (INR)</label>
-              <input type="number" step="0.01" value={fees} onChange={(e) => setFees(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" />
+              <label htmlFor="p-fees" className="block text-sm font-medium text-slate-600 mb-1.5">Fees (INR)</label>
+              <input id="p-fees" name="fees" type="number" step="0.01" value={fees} onChange={(e) => setFees(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" />
             </div>
           </div>
         </div>
@@ -164,44 +164,44 @@ export default function PatientForm({ hospitals, editPatient, onDone, onCancel, 
             {patientType === 'ip' && (
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1.5">Admission Date</label>
-                  <input type="date" value={admissionDate} onChange={(e) => setAdmissionDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" />
+                  <label htmlFor="p-admission-date" className="block text-sm font-medium text-slate-600 mb-1.5">Admission Date</label>
+                  <input id="p-admission-date" name="admissionDate" type="date" value={admissionDate} onChange={(e) => setAdmissionDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1.5">Surgery Date</label>
-                  <input type="date" value={surgeryDate} onChange={(e) => setSurgeryDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" />
+                  <label htmlFor="p-surgery-date" className="block text-sm font-medium text-slate-600 mb-1.5">Surgery Date</label>
+                  <input id="p-surgery-date" name="surgeryDate" type="date" value={surgeryDate} onChange={(e) => setSurgeryDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1.5">Discharge Date</label>
-                  <input type="date" value={dischargeDate} onChange={(e) => setDischargeDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" />
+                  <label htmlFor="p-discharge-date" className="block text-sm font-medium text-slate-600 mb-1.5">Discharge Date</label>
+                  <input id="p-discharge-date" name="dischargeDate" type="date" value={dischargeDate} onChange={(e) => setDischargeDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" />
                 </div>
               </div>
             )}
 
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Diagnosis</label>
-              <input type="text" value={diagnosis} onChange={(e) => setDiagnosis(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" placeholder="e.g. Right inguinal hernia" />
+              <label htmlFor="p-diagnosis" className="block text-sm font-medium text-slate-600 mb-1.5">Diagnosis</label>
+              <input id="p-diagnosis" name="diagnosis" type="text" value={diagnosis} onChange={(e) => setDiagnosis(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" placeholder="e.g. Right inguinal hernia" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Prescription</label>
-              <textarea value={prescription} onChange={(e) => setPrescription(e.target.value)} rows={3} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition resize-none" placeholder="Prescription notes..." />
+              <label htmlFor="p-prescription" className="block text-sm font-medium text-slate-600 mb-1.5">Prescription</label>
+              <textarea id="p-prescription" name="prescription" value={prescription} onChange={(e) => setPrescription(e.target.value)} rows={3} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition resize-none" placeholder="Prescription notes..." />
             </div>
             <div className="p-4 rounded-lg bg-slate-50 border border-slate-100">
               <label className="flex items-center gap-3 cursor-pointer">
-                <input type="checkbox" checked={minorProcedureDone} onChange={(e) => setMinorProcedureDone(e.target.checked)} className="w-4 h-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500" />
+                <input id="p-minor-procedure" name="minorProcedureDone" type="checkbox" checked={minorProcedureDone} onChange={(e) => setMinorProcedureDone(e.target.checked)} className="w-4 h-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500" />
                 <div className="flex items-center gap-2"><ClipboardCheck className="w-4 h-4 text-slate-500" /><span className="text-sm font-medium text-slate-700">Minor procedure done</span></div>
               </label>
               {minorProcedureDone && <p className="text-xs text-slate-400 mt-2 ml-7">You can add full surgery details from the patient detail page after saving.</p>}
             </div>
             <div className="p-4 rounded-lg bg-amber-50/50 border border-amber-100">
               <label className="flex items-center gap-3 cursor-pointer">
-                <input type="checkbox" checked={followUpNeeded} onChange={(e) => { setFollowUpNeeded(e.target.checked); if (!e.target.checked) setFollowUpDate(''); }} className="w-4 h-4 rounded border-slate-300 text-amber-600 focus:ring-amber-500" />
+                <input id="p-follow-up-needed" name="followUpNeeded" type="checkbox" checked={followUpNeeded} onChange={(e) => { setFollowUpNeeded(e.target.checked); if (!e.target.checked) setFollowUpDate(''); }} className="w-4 h-4 rounded border-slate-300 text-amber-600 focus:ring-amber-500" />
                 <div className="flex items-center gap-2"><Calendar className="w-4 h-4 text-amber-500" /><span className="text-sm font-medium text-slate-700">Follow-up needed</span></div>
               </label>
               {followUpNeeded && (
                 <div className="mt-3 ml-7">
-                  <label className="block text-sm font-medium text-slate-600 mb-1.5">Follow-up Date</label>
-                  <input type="date" value={followUpDate} onChange={(e) => setFollowUpDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-amber-400 focus:ring-2 focus:ring-amber-100 outline-none transition" />
+                  <label htmlFor="p-follow-up-date" className="block text-sm font-medium text-slate-600 mb-1.5">Follow-up Date</label>
+                  <input id="p-follow-up-date" name="followUpDate" type="date" value={followUpDate} onChange={(e) => setFollowUpDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-amber-400 focus:ring-2 focus:ring-amber-100 outline-none transition" />
                   <p className="text-xs text-amber-600 mt-1.5 flex items-center gap-1"><FlaskConical className="w-3 h-3" />This will show as a reminder on the Dashboard.</p>
                 </div>
               )}

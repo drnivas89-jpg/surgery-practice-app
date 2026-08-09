@@ -29,6 +29,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const lastActivityRef = useRef<number>(Date.now());
 
   useEffect(() => {
+    // Primary detection relies on Supabase firing a PASSWORD_RECOVERY event,
+    // but that can race with page load (especially after a manually-edited
+    // or slightly-delayed redirect). As a robust fallback, also check the
+    // URL hash directly for a recovery-type token on first load.
+    if (typeof window !== 'undefined' && window.location.hash.includes('type=recovery')) {
+      setPasswordRecovery(true);
+    }
+
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       setLoading(false);

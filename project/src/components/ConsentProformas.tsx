@@ -140,6 +140,9 @@ export default function ConsentProformas() {
         <div className="relative flex-1 min-w-[200px]">
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
+            id="consent-search"
+            name="search"
+            aria-label="Search by procedure or content"
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -147,7 +150,7 @@ export default function ConsentProformas() {
             className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
           />
         </div>
-        <select value={langFilter} onChange={(e) => setLangFilter(e.target.value)} className="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
+        <select id="consent-lang-filter" name="languageFilter" aria-label="Filter by language" value={langFilter} onChange={(e) => setLangFilter(e.target.value)} className="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
           <option value="">All languages</option>
           {LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
         </select>
@@ -211,8 +214,10 @@ export default function ConsentProformas() {
               {error && <div className="p-3 rounded-lg bg-red-50 text-red-600 text-sm">{error}</div>}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Name</label>
+                  <label htmlFor="consent-proc-name" className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Name</label>
                   <input
+                    id="consent-proc-name"
+                    name="procedureName"
                     type="text"
                     value={procName}
                     onChange={(e) => setProcName(e.target.value)}
@@ -221,8 +226,10 @@ export default function ConsentProformas() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1.5">Language</label>
+                  <label htmlFor="consent-language" className="block text-sm font-medium text-slate-600 mb-1.5">Language</label>
                   <select
+                    id="consent-language"
+                    name="language"
                     value={language}
                     onChange={(e) => setLanguage(e.target.value)}
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500"
@@ -232,8 +239,10 @@ export default function ConsentProformas() {
                 </div>
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Consent Proforma Content</label>
+                <label htmlFor="consent-content" className="block text-sm font-medium text-slate-600 mb-1.5">Consent Proforma Content</label>
                 <textarea
+                  id="consent-content"
+                  name="content"
                   value={content}
                   onChange={(e) => setContent(e.target.value)}
                   rows={14}

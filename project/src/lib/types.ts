@@ -23,6 +23,10 @@ export interface Patient {
   patient_type: 'op' | 'ip' | null;
   diagnosis: string | null;
   minor_procedure_done: boolean;
+  treatment_type: 'surgical' | 'non_surgical' | null;
+  discharge_advice: string;
+  discharge_summary_path: string | null;
+  treatment_photo_paths: string[];
   created_at: string;
   hospital?: Hospital;
 }
@@ -140,4 +144,32 @@ export interface Collaborator {
   status: 'pending' | 'accepted' | 'revoked' | 'declined';
   created_at: string;
   responded_at: string | null;
+}
+
+export interface ClassEntry {
+  id: string;
+  user_id: string;
+  hospital_id: string | null;
+  class_date: string | null;
+  class_type: string;
+  audience: string;
+  topic: string;
+  ppt_path: string | null;
+  notes: string;
+  created_at: string;
+  hospital?: Hospital;
+}
+
+export interface Publication {
+  id: string;
+  user_id: string;
+  publication_type: string;
+  topic: string;
+  author_details: string;
+  month: number | null;
+  year: number | null;
+  platform: string;
+  file_path: string | null;
+  notes: string;
+  created_at: string;
 }

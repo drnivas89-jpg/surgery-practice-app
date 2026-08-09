@@ -5,6 +5,7 @@ import { formatDate, formatCurrency, daysUntil } from '@/lib/helpers';
 import { Users, Plus, Search, Activity, Calendar, ArrowLeft, Trash2, Pencil, Download } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import PatientForm from './PatientForm';
+import PatientRegistrationWizard from './PatientRegistrationWizard';
 import PatientDetail from './PatientDetail';
 
 export default function Patients() {
@@ -96,6 +97,18 @@ export default function Patients() {
   }
 
   if (showForm) {
+    if (!editPatient) {
+      return (
+        <PatientRegistrationWizard
+          hospitals={hospitals}
+          onDone={() => {
+            setShowForm(false);
+            load();
+          }}
+          onCancel={() => setShowForm(false)}
+        />
+      );
+    }
     return (
       <PatientForm
         hospitals={hospitals}

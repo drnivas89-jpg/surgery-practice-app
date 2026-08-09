@@ -532,13 +532,13 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
         <Modal title={editingSurgeryId ? 'Edit Surgery Details' : 'Add Surgery Details'} onClose={() => { setShowSurgeryForm(false); resetSurgeryForm(); }}>
           <form onSubmit={handleSaveSurgery} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Name</label>
-              <input type="text" required value={procName} onChange={(e) => setProcName(e.target.value)} className="form-input" placeholder="e.g. Laparoscopic Cholecystectomy" />
+              <label htmlFor="pd-proc-name" className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Name</label>
+              <input id="pd-proc-name" name="procName" type="text" required value={procName} onChange={(e) => setProcName(e.target.value)} className="form-input" placeholder="e.g. Laparoscopic Cholecystectomy" />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Surgery Type</label>
-                <select value={surgeryType} onChange={(e) => setSurgeryType(e.target.value)} className="form-input bg-white">
+                <label htmlFor="pd-surgery-type" className="block text-sm font-medium text-slate-600 mb-1.5">Surgery Type</label>
+                <select id="pd-surgery-type" name="surgeryType" value={surgeryType} onChange={(e) => setSurgeryType(e.target.value)} className="form-input bg-white">
                   <option value="">Select type...</option>
                   {surgeryTypes.map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
                 </select>
@@ -553,16 +553,16 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
               </div>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Type of Anaesthesia</label>
-              <input type="text" value={anaesthesia} onChange={(e) => setAnaesthesia(e.target.value)} className="form-input" placeholder="e.g. General, Spinal..." />
+              <label htmlFor="pd-anaesthesia" className="block text-sm font-medium text-slate-600 mb-1.5">Type of Anaesthesia</label>
+              <input id="pd-anaesthesia" name="anaesthesia" type="text" value={anaesthesia} onChange={(e) => setAnaesthesia(e.target.value)} className="form-input" placeholder="e.g. General, Spinal..." />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Date of Surgery</label>
-              <input type="date" value={surgeryDate} onChange={(e) => setSurgeryDate(e.target.value)} className="form-input" />
+              <label htmlFor="pd-surgery-date" className="block text-sm font-medium text-slate-600 mb-1.5">Date of Surgery</label>
+              <input id="pd-surgery-date" name="surgeryDate" type="date" value={surgeryDate} onChange={(e) => setSurgeryDate(e.target.value)} className="form-input" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Notes</label>
-              <textarea value={procNotes} onChange={(e) => setProcNotes(e.target.value)} rows={4} className="form-input resize-none" />
+              <label htmlFor="pd-proc-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Notes</label>
+              <textarea id="pd-proc-notes" name="procNotes" value={procNotes} onChange={(e) => setProcNotes(e.target.value)} rows={4} className="form-input resize-none" />
             </div>
             {editingSurgeryId && existingSurgeryImages.length > 0 && (
               <div>
@@ -575,8 +575,8 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
               </div>
             )}
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">{editingSurgeryId ? 'Add More Surgery Images' : 'Surgery Images'}</label>
-              <input type="file" multiple accept="image/*" onChange={(e) => setSurgeryImages(Array.from(e.target.files || []))} className="w-full text-sm text-slate-500 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-sky-50 file:text-sky-600 hover:file:bg-sky-100" />
+              <label htmlFor="pd-field-5" className="block text-sm font-medium text-slate-600 mb-1.5">{editingSurgeryId ? 'Add More Surgery Images' : 'Surgery Images'}</label>
+              <input id="pd-field-5" name="field-5" type="file" multiple accept="image/*" onChange={(e) => setSurgeryImages(Array.from(e.target.files || []))} className="w-full text-sm text-slate-500 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-sky-50 file:text-sky-600 hover:file:bg-sky-100" />
             </div>
             {editingSurgeryId && existingConsentImages.length > 0 && (
               <div>
@@ -589,8 +589,8 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
               </div>
             )}
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">{editingSurgeryId ? 'Add More Consent Page Images' : 'Patient Consent Page'}</label>
-              <input type="file" multiple accept="image/*" onChange={(e) => setConsentImages(Array.from(e.target.files || []))} className="w-full text-sm text-slate-500 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-emerald-50 file:text-emerald-600 hover:file:bg-emerald-100" />
+              <label htmlFor="pd-field-6" className="block text-sm font-medium text-slate-600 mb-1.5">{editingSurgeryId ? 'Add More Consent Page Images' : 'Patient Consent Page'}</label>
+              <input id="pd-field-6" name="field-6" type="file" multiple accept="image/*" onChange={(e) => setConsentImages(Array.from(e.target.files || []))} className="w-full text-sm text-slate-500 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-emerald-50 file:text-emerald-600 hover:file:bg-emerald-100" />
               <p className="text-xs text-slate-400 mt-1">Upload the signed patient consent page for this surgery.</p>
             </div>
             <button type="submit" className="w-full py-2.5 bg-sky-600 text-white rounded-lg font-medium hover:bg-sky-700 transition">
@@ -637,21 +637,21 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">{fuType === 'fnac' ? 'FNAC Number' : 'HPE Number'}</label>
-                <input type="text" value={reportNum} onChange={(e) => setReportNum(e.target.value)} className="form-input" />
+                <label htmlFor="pd-report-num" className="block text-sm font-medium text-slate-600 mb-1.5">{fuType === 'fnac' ? 'FNAC Number' : 'HPE Number'}</label>
+                <input id="pd-report-num" name="reportNum" type="text" value={reportNum} onChange={(e) => setReportNum(e.target.value)} className="form-input" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Lab</label>
-                <input type="text" value={lab} onChange={(e) => setLab(e.target.value)} className="form-input" />
+                <label htmlFor="pd-lab" className="block text-sm font-medium text-slate-600 mb-1.5">Lab</label>
+                <input id="pd-lab" name="lab" type="text" value={lab} onChange={(e) => setLab(e.target.value)} className="form-input" />
               </div>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Year</label>
-              <input type="number" value={fuYear} onChange={(e) => setFuYear(e.target.value)} className="form-input" placeholder="e.g. 2025" />
+              <label htmlFor="pd-fu-year" className="block text-sm font-medium text-slate-600 mb-1.5">Year</label>
+              <input id="pd-fu-year" name="fuYear" type="number" value={fuYear} onChange={(e) => setFuYear(e.target.value)} className="form-input" placeholder="e.g. 2025" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Findings</label>
-              <textarea value={findings} onChange={(e) => setFindings(e.target.value)} rows={4} className="form-input resize-none" />
+              <label htmlFor="pd-findings" className="block text-sm font-medium text-slate-600 mb-1.5">Findings</label>
+              <textarea id="pd-findings" name="findings" value={findings} onChange={(e) => setFindings(e.target.value)} rows={4} className="form-input resize-none" />
             </div>
             {editingFollowUpId && existingReportImages.length > 0 && (
               <div>
@@ -664,8 +664,8 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
               </div>
             )}
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">{editingFollowUpId ? 'Add More Report Images' : 'Report Images'}</label>
-              <input type="file" multiple accept="image/*" onChange={(e) => setReportImages(Array.from(e.target.files || []))} className="w-full text-sm text-slate-500 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-violet-50 file:text-violet-600 hover:file:bg-violet-100" />
+              <label htmlFor="pd-field-11" className="block text-sm font-medium text-slate-600 mb-1.5">{editingFollowUpId ? 'Add More Report Images' : 'Report Images'}</label>
+              <input id="pd-field-11" name="field-11" type="file" multiple accept="image/*" onChange={(e) => setReportImages(Array.from(e.target.files || []))} className="w-full text-sm text-slate-500 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-violet-50 file:text-violet-600 hover:file:bg-violet-100" />
             </div>
             <button type="submit" className="w-full py-2.5 bg-violet-600 text-white rounded-lg font-medium hover:bg-violet-700 transition">
               {editingFollowUpId ? 'Update Follow-up' : 'Save Follow-up'}
@@ -679,16 +679,16 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
         <Modal title={editingPaymentId ? 'Edit Payment' : 'Add Payment Received'} onClose={() => { setShowPaymentForm(false); resetPaymentForm(); }}>
           <form onSubmit={handleSavePayment} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Amount Received (INR) *</label>
-              <input type="number" step="0.01" required value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className="form-input" />
+              <label htmlFor="pd-pay-amount" className="block text-sm font-medium text-slate-600 mb-1.5">Amount Received (INR) *</label>
+              <input id="pd-pay-amount" name="payAmount" type="number" step="0.01" required value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className="form-input" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Payment Date *</label>
-              <input type="date" required value={payDate} onChange={(e) => setPayDate(e.target.value)} className="form-input" />
+              <label htmlFor="pd-pay-date" className="block text-sm font-medium text-slate-600 mb-1.5">Payment Date *</label>
+              <input id="pd-pay-date" name="payDate" type="date" required value={payDate} onChange={(e) => setPayDate(e.target.value)} className="form-input" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
-              <input type="text" value={payNotes} onChange={(e) => setPayNotes(e.target.value)} className="form-input" placeholder="Optional notes..." />
+              <label htmlFor="pd-pay-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
+              <input id="pd-pay-notes" name="payNotes" type="text" value={payNotes} onChange={(e) => setPayNotes(e.target.value)} className="form-input" placeholder="Optional notes..." />
             </div>
             <button type="submit" className="w-full py-2.5 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700 transition">
               {editingPaymentId ? 'Update Payment' : 'Save Payment'}
@@ -702,22 +702,22 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
         <Modal title={editingInvestigationId ? 'Edit Investigation' : 'Add Investigation'} onClose={() => { setShowInvestigationForm(false); resetInvestigationForm(); }}>
           <form onSubmit={handleSaveInvestigation} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Investigation Name *</label>
-              <input type="text" required value={invName} onChange={(e) => setInvName(e.target.value)} className="form-input" placeholder="e.g. Hemoglobin, Blood Sugar, Creatinine, Ultrasound..." />
+              <label htmlFor="pd-inv-name" className="block text-sm font-medium text-slate-600 mb-1.5">Investigation Name *</label>
+              <input id="pd-inv-name" name="invName" type="text" required value={invName} onChange={(e) => setInvName(e.target.value)} className="form-input" placeholder="e.g. Hemoglobin, Blood Sugar, Creatinine, Ultrasound..." />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Date</label>
-                <input type="date" value={invDate} onChange={(e) => setInvDate(e.target.value)} className="form-input" />
+                <label htmlFor="pd-inv-date" className="block text-sm font-medium text-slate-600 mb-1.5">Date</label>
+                <input id="pd-inv-date" name="invDate" type="date" value={invDate} onChange={(e) => setInvDate(e.target.value)} className="form-input" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Value / Result</label>
-                <input type="text" value={invValue} onChange={(e) => setInvValue(e.target.value)} className="form-input" placeholder="e.g. 14.2 g/dL, Positive, 120 mg/dL..." />
+                <label htmlFor="pd-inv-value" className="block text-sm font-medium text-slate-600 mb-1.5">Value / Result</label>
+                <input id="pd-inv-value" name="invValue" type="text" value={invValue} onChange={(e) => setInvValue(e.target.value)} className="form-input" placeholder="e.g. 14.2 g/dL, Positive, 120 mg/dL..." />
               </div>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
-              <input type="text" value={invNotes} onChange={(e) => setInvNotes(e.target.value)} className="form-input" placeholder="Optional notes..." />
+              <label htmlFor="pd-inv-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
+              <input id="pd-inv-notes" name="invNotes" type="text" value={invNotes} onChange={(e) => setInvNotes(e.target.value)} className="form-input" placeholder="Optional notes..." />
             </div>
             <button type="submit" className="w-full py-2.5 bg-teal-600 text-white rounded-lg font-medium hover:bg-teal-700 transition">
               {editingInvestigationId ? 'Update Investigation' : 'Save Investigation'}

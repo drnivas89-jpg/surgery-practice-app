@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { Hospital, MonthlyEntry, Surgery, Patient, Attendance } from '@/lib/types';
+import { Hospital, MonthlyEntry, Surgery, Patient, Attendance, ClassEntry, Publication } from '@/lib/types';
 import { formatCurrency, formatDate } from '@/lib/helpers';
-import { FileBarChart, Building2, Calendar, IndianRupee, Activity, Users, Download, FileSpreadsheet, Clock, CheckCircle2, LogOut, Zap } from 'lucide-react';
+import { FileBarChart, Building2, Calendar, IndianRupee, Activity, Users, Download, FileSpreadsheet, Clock, CheckCircle2, LogOut, Zap, GraduationCap, BookOpen } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { saveAs } from 'file-saver';
+
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 export default function Reports() {
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
@@ -12,6 +14,8 @@ export default function Reports() {
   const [surgeries, setSurgeries] = useState<Surgery[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [attendance, setAttendance] = useState<Attendance[]>([]);
+  const [classes, setClasses] = useState<ClassEntry[]>([]);
+  const [publications, setPublications] = useState<Publication[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [hospitalFilter, setHospitalFilter] = useState('all');
@@ -19,18 +23,22 @@ export default function Reports() {
   const [endDate, setEndDate] = useState('');
 
   const load = async () => {
-    const [{ data: h }, { data: me }, { data: s }, { data: p }, { data: att }] = await Promise.all([
+    const [{ data: h }, { data: me }, { data: s }, { data: p }, { data: att }, { data: cls }, { data: pubs }] = await Promise.all([
       supabase.from('hospitals').select('*').order('name'),
       supabase.from('monthly_entries').select('*, hospital:hospitals(*)').order('month', { ascending: false }),
       supabase.from('surgeries').select('*, patient:patients(*)').order('surgery_date', { ascending: false }),
       supabase.from('patients').select('*, hospital:hospitals(*)').order('created_at', { ascending: false }),
       supabase.from('attendance').select('*, hospital:hospitals(*)').order('attendance_date', { ascending: false }),
+      supabase.from('classes').select('*, hospital:hospitals(*)').order('class_date', { ascending: false }),
+      supabase.from('publications').select('*').order('year', { ascending: false }),
     ]);
     setHospitals(h || []);
     setMonthlyEntries(me || []);
     setSurgeries(s || []);
     setPatients(p || []);
     setAttendance(att || []);
+    setClasses(cls || []);
+    setPublications(pubs || []);
     setLoading(false);
   };
 
@@ -79,6 +87,24 @@ export default function Reports() {
     }
     return true;
   }).sort((a, b) => a.attendance_date.localeCompare(b.attendance_date));
+
+  const filteredClasses = classes.filter((c) => {
+    if (hospitalFilter !== 'all' && c.hospital_id !== hospitalFilter) return false;
+    if ((startDate || endDate) && c.class_date) {
+      if (!inDateRange(c.class_date)) return false;
+    }
+    return true;
+  });
+
+  const filteredPublications = publications.filter((p) => {
+    if (!startDate && !endDate) return true;
+    if (!p.year) return true;
+    const startYear = startDate ? parseInt(startDate.substring(0, 4)) : null;
+    const endYear = endDate ? parseInt(endDate.substring(0, 4)) : null;
+    if (startYear && p.year < startYear) return false;
+    if (endYear && p.year > endYear) return false;
+    return true;
+  });
 
   const attPresent = filteredAttendance.filter((a) => a.status === 'present').length;
   const attLeave = filteredAttendance.filter((a) => a.status === 'leave');
@@ -315,6 +341,29 @@ export default function Reports() {
     attendanceSheet['!cols'] = [{ wch: 12 }, { wch: 20 }, { wch: 12 }, { wch: 16 }, { wch: 24 }];
     XLSX.utils.book_append_sheet(wb, attendanceSheet, 'Attendance');
 
+    // --- Classes sheet ---
+    const classRows = [
+      ['Date', 'Hospital', 'Type', 'Audience', 'Topic', 'Notes'],
+      ...filteredClasses.map((c) => [
+        formatDate(c.class_date), c.hospital?.name || '', c.class_type || '', c.audience || '', c.topic || '', c.notes || '',
+      ]),
+    ];
+    const classSheet = XLSX.utils.aoa_to_sheet(classRows);
+    classSheet['!cols'] = [{ wch: 12 }, { wch: 20 }, { wch: 16 }, { wch: 20 }, { wch: 26 }, { wch: 24 }];
+    XLSX.utils.book_append_sheet(wb, classSheet, 'Classes');
+
+    // --- Publications sheet ---
+    const pubRows = [
+      ['Type', 'Topic', 'Authors', 'Month', 'Year', 'Platform', 'Notes'],
+      ...filteredPublications.map((p) => [
+        p.publication_type || '', p.topic || '', p.author_details || '',
+        p.month ? MONTH_NAMES[p.month - 1] : '', p.year || '', p.platform || '', p.notes || '',
+      ]),
+    ];
+    const pubSheet = XLSX.utils.aoa_to_sheet(pubRows);
+    pubSheet['!cols'] = [{ wch: 14 }, { wch: 26 }, { wch: 22 }, { wch: 12 }, { wch: 8 }, { wch: 22 }, { wch: 24 }];
+    XLSX.utils.book_append_sheet(wb, pubSheet, 'Publications');
+
     const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
     const blob2 = new Blob([wbout], { type: 'application/octet-stream' });
     saveAs(blob2, `surgical-report-${new Date().toISOString().substring(0, 10)}.xlsx`);
@@ -405,6 +454,8 @@ export default function Reports() {
         <StatCard label="Fees Generated" value={formatCurrency(totalFeesGen)} icon={IndianRupee} color="amber" />
         <StatCard label="Fees Received" value={formatCurrency(totalFeesRec)} icon={IndianRupee} color="emerald" />
         <StatCard label="Pending" value={formatCurrency(totalPending)} icon={IndianRupee} color="red" />
+        <StatCard label="Classes Given" value={filteredClasses.length} icon={GraduationCap} color="violet" />
+        <StatCard label="Publications" value={filteredPublications.length} icon={BookOpen} color="sky" />
       </div>
 
       {/* Surgery Type Breakdown */}

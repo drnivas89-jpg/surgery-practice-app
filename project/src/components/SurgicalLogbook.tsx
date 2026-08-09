@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import { Patient, Hospital, Surgery } from '@/lib/types';
+import { Patient, Hospital, Surgery, ClassEntry, Publication } from '@/lib/types';
 import { formatDate, getImageUrl } from '@/lib/helpers';
-import { Activity, Download, Filter, X, FileText } from 'lucide-react';
+import { Activity, Download, Filter, X, FileText, GraduationCap, BookOpen } from 'lucide-react';
 import jsPDF from 'jspdf';
 
 const MONTHS = [
@@ -20,6 +20,10 @@ interface LogbookRow {
 export default function SurgicalLogbook() {
   const { user } = useAuth();
   const [rows, setRows] = useState<LogbookRow[]>([]);
+  const [classes, setClasses] = useState<ClassEntry[]>([]);
+  const [publications, setPublications] = useState<Publication[]>([]);
+  const [includeClasses, setIncludeClasses] = useState(false);
+  const [includePublications, setIncludePublications] = useState(false);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
 
@@ -33,10 +37,12 @@ export default function SurgicalLogbook() {
   useEffect(() => {
     if (!user) return;
     (async () => {
-      const [{ data: surgeries }, { data: patients }, { data: hospitals }] = await Promise.all([
+      const [{ data: surgeries }, { data: patients }, { data: hospitals }, { data: cls }, { data: pubs }] = await Promise.all([
         supabase.from('surgeries').select('*').order('surgery_date', { ascending: false, nullsFirst: false }),
         supabase.from('patients').select('*, hospital:hospitals(*)'),
         supabase.from('hospitals').select('*').order('name'),
+        supabase.from('classes').select('*, hospital:hospitals(*)').order('class_date', { ascending: false }),
+        supabase.from('publications').select('*').order('year', { ascending: false }),
       ]);
       const patientMap = new Map<string, Patient>();
       (patients || []).forEach((p: Patient) => patientMap.set(p.id, p));
@@ -48,6 +54,8 @@ export default function SurgicalLogbook() {
         hospital: hospitalMap.get(patientMap.get(s.patient_id)?.hospital_id || '') || null,
       }));
       setRows(built);
+      setClasses(cls || []);
+      setPublications(pubs || []);
       setLoading(false);
 
       const allPaths = (surgeries || []).flatMap((s: Surgery) => [
@@ -272,6 +280,93 @@ export default function SurgicalLogbook() {
       y += 8;
     }
 
+    // ---- Classes (if included) ----
+    if (includeClasses) {
+      addPageNumber();
+      doc.addPage();
+      page++;
+      y = margin;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.setTextColor(40, 40, 40);
+      doc.text('Classes / Teaching', margin, y);
+      y += 24;
+
+      if (classes.length === 0) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        doc.setTextColor(130, 130, 130);
+        doc.text('No classes logged.', margin, y);
+        y += 16;
+      } else {
+        classes.forEach((c) => {
+          if (y > pageHeight - margin - 60) {
+            addPageNumber();
+            doc.addPage();
+            page++;
+            y = margin;
+          }
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(11);
+          doc.setTextColor(20, 20, 40);
+          doc.text(c.topic || 'Untitled class', margin, y);
+          y += 14;
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(9);
+          doc.setTextColor(90, 90, 90);
+          doc.text(`${formatDate(c.class_date)}  |  ${c.class_type || '—'}  |  ${c.hospital?.name || '—'}  |  To: ${c.audience || '—'}`, margin, y);
+          y += 18;
+          doc.setDrawColor(235, 235, 235);
+          doc.line(margin, y, pageWidth - margin, y);
+          y += 14;
+        });
+      }
+    }
+
+    // ---- Publications (if included) ----
+    if (includePublications) {
+      addPageNumber();
+      doc.addPage();
+      page++;
+      y = margin;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.setTextColor(40, 40, 40);
+      doc.text('Publications', margin, y);
+      y += 24;
+
+      if (publications.length === 0) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        doc.setTextColor(130, 130, 130);
+        doc.text('No publications logged.', margin, y);
+        y += 16;
+      } else {
+        publications.forEach((p) => {
+          if (y > pageHeight - margin - 60) {
+            addPageNumber();
+            doc.addPage();
+            page++;
+            y = margin;
+          }
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(11);
+          doc.setTextColor(20, 20, 40);
+          doc.text(p.topic || 'Untitled', margin, y);
+          y += 14;
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(9);
+          doc.setTextColor(90, 90, 90);
+          const when = `${p.month ? MONTHS[p.month - 1] : ''} ${p.year || ''}`.trim();
+          doc.text(`${p.publication_type || '—'}  |  ${p.platform || '—'}  |  ${when || '—'}  |  ${p.author_details || '—'}`, margin, y);
+          y += 18;
+          doc.setDrawColor(235, 235, 235);
+          doc.line(margin, y, pageWidth - margin, y);
+          y += 14;
+        });
+      }
+    }
+
     // Final page number on last page
     addPageNumber();
 
@@ -317,33 +412,57 @@ export default function SurgicalLogbook() {
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">Month</label>
-            <select value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
+            <label htmlFor="log-filter-month" className="block text-xs font-medium text-slate-500 mb-1">Month</label>
+            <select id="log-filter-month" name="month" value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
               <option value="">All months</option>
               {MONTHS.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">Year</label>
-            <select value={yearFilter} onChange={(e) => setYearFilter(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
+            <label htmlFor="log-filter-year" className="block text-xs font-medium text-slate-500 mb-1">Year</label>
+            <select id="log-filter-year" name="year" value={yearFilter} onChange={(e) => setYearFilter(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
               <option value="">All years</option>
               {availableYears.map((y) => <option key={y} value={y.toString()}>{y}</option>)}
             </select>
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">Hospital</label>
-            <select value={hospitalFilter} onChange={(e) => setHospitalFilter(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
+            <label htmlFor="log-filter-hospital" className="block text-xs font-medium text-slate-500 mb-1">Hospital</label>
+            <select id="log-filter-hospital" name="hospital" value={hospitalFilter} onChange={(e) => setHospitalFilter(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
               <option value="">All hospitals</option>
               {availableHospitals.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
             </select>
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">Surgery Type</label>
-            <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
+            <label htmlFor="log-filter-type" className="block text-xs font-medium text-slate-500 mb-1">Surgery Type</label>
+            <select id="log-filter-type" name="surgeryType" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
               <option value="">All types</option>
               {availableTypes.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
+        </div>
+        <div className="flex flex-wrap gap-4 mt-3 pt-3 border-t border-slate-100">
+          <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-600">
+            <input
+              id="log-include-classes"
+              name="includeClasses"
+              type="checkbox"
+              checked={includeClasses}
+              onChange={(e) => setIncludeClasses(e.target.checked)}
+              className="w-4 h-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+            />
+            <GraduationCap className="w-4 h-4 text-violet-500" /> Include Classes in Logbook
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-600">
+            <input
+              id="log-include-publications"
+              name="includePublications"
+              type="checkbox"
+              checked={includePublications}
+              onChange={(e) => setIncludePublications(e.target.checked)}
+              className="w-4 h-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+            />
+            <BookOpen className="w-4 h-4 text-sky-500" /> Include Publications in Logbook
+          </label>
         </div>
         {activeFilters.length > 0 && (
           <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-slate-100">
@@ -424,6 +543,60 @@ export default function SurgicalLogbook() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Classes — shown when included */}
+      {includeClasses && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 pt-2">
+            <GraduationCap className="w-4 h-4 text-violet-500" />
+            <h2 className="font-semibold text-slate-700">Classes / Teaching</h2>
+          </div>
+          {classes.length === 0 ? (
+            <p className="text-sm text-slate-400 bg-white rounded-xl border border-slate-200 p-4 text-center">No classes logged yet.</p>
+          ) : (
+            classes.map((c) => (
+              <div key={c.id} className="bg-white rounded-xl border border-slate-200 p-4">
+                <div className="flex items-center gap-2 flex-wrap mb-1">
+                  <span className="font-semibold text-slate-800">{c.topic || 'Untitled class'}</span>
+                  {c.class_type && <span className="text-xs font-medium px-2 py-0.5 rounded bg-violet-50 text-violet-600">{c.class_type}</span>}
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs text-slate-500">
+                  <div><span className="text-slate-400">Date:</span> {formatDate(c.class_date)}</div>
+                  <div><span className="text-slate-400">Hospital:</span> {c.hospital?.name || '—'}</div>
+                  <div><span className="text-slate-400">Audience:</span> {c.audience || '—'}</div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* Publications — shown when included */}
+      {includePublications && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 pt-2">
+            <BookOpen className="w-4 h-4 text-sky-500" />
+            <h2 className="font-semibold text-slate-700">Publications</h2>
+          </div>
+          {publications.length === 0 ? (
+            <p className="text-sm text-slate-400 bg-white rounded-xl border border-slate-200 p-4 text-center">No publications logged yet.</p>
+          ) : (
+            publications.map((p) => (
+              <div key={p.id} className="bg-white rounded-xl border border-slate-200 p-4">
+                <div className="flex items-center gap-2 flex-wrap mb-1">
+                  <span className="font-semibold text-slate-800">{p.topic || 'Untitled'}</span>
+                  {p.publication_type && <span className="text-xs font-medium px-2 py-0.5 rounded bg-sky-50 text-sky-600">{p.publication_type}</span>}
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs text-slate-500">
+                  <div><span className="text-slate-400">Authors:</span> {p.author_details || '—'}</div>
+                  <div><span className="text-slate-400">Platform:</span> {p.platform || '—'}</div>
+                  <div><span className="text-slate-400">When:</span> {p.month ? MONTHS[p.month - 1] : ''} {p.year || '—'}</div>
+                </div>
+              </div>
+            ))
+          )}
         </div>
       )}
     </div>
