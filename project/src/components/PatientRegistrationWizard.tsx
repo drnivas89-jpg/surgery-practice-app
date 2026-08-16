@@ -2,9 +2,11 @@ import { useState, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { Hospital } from '@/lib/types';
-import { generateUniquePatientId, upsertDailyEntryCount, uploadImage } from '@/lib/helpers';
+import { generateUniquePatientId, upsertDailyEntryCount, uploadImage, ensurePresentAttendance } from '@/lib/helpers';
+import PrescriptionTable, { DEFAULT_PRESCRIPTION } from './PrescriptionTable';
+import PresentDutyPrompt from './PresentDutyPrompt';
 import {
-  ArrowLeft, ArrowRight, Save, AlertCircle, Stethoscope, UserRound,
+  ArrowLeft, ArrowRight, Save, AlertCircle, Stethoscope, UserRound, MessageCircleQuestion,
   Calendar, Phone, Plus, Trash2, Upload, Image as ImageIcon, IndianRupee, CheckCircle2,
 } from 'lucide-react';
 
@@ -41,10 +43,10 @@ export default function PatientRegistrationWizard({ hospitals, defaultHospitalId
   // Step 2 — diagnosis
   const [diagnosis, setDiagnosis] = useState('');
 
-  // Step 3 — OP or IP
-  const [patientType, setPatientType] = useState<'op' | 'ip' | null>(null);
+  // Step 3 — OP, IP, or Opinion
+  const [patientType, setPatientType] = useState<'op' | 'ip' | 'opinion' | null>(null);
 
-  // OP branch
+  // OP / Opinion branch
   const [prescription, setPrescription] = useState('');
 
   // IP branch
@@ -69,6 +71,7 @@ export default function PatientRegistrationWizard({ hospitals, defaultHospitalId
   const [dischargeAdvice, setDischargeAdvice] = useState('');
   const [dischargeDate, setDischargeDate] = useState('');
   const [dischargeSummaryFile, setDischargeSummaryFile] = useState<File | null>(null);
+  const [prescriptionItems, setPrescriptionItems] = useState(DEFAULT_PRESCRIPTION);
 
   // Follow-up (shared by all)
   const [followUpNeeded, setFollowUpNeeded] = useState(false);
@@ -80,10 +83,11 @@ export default function PatientRegistrationWizard({ hospitals, defaultHospitalId
   const [stepIndex, setStepIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [newAttendanceId, setNewAttendanceId] = useState<string | null>(null);
 
   const steps: StepKey[] = useMemo(() => {
     const s: StepKey[] = ['demographics', 'diagnosis', 'op_or_ip'];
-    if (patientType === 'op') {
+    if (patientType === 'op' || patientType === 'opinion') {
       s.push('op_details', 'fees');
     } else if (patientType === 'ip') {
       s.push('ip_branch');
@@ -125,6 +129,20 @@ export default function PatientRegistrationWizard({ hospitals, defaultHospitalId
     setStepIndex((i) => Math.max(i - 1, 0));
   };
 
+  const handleProcedureNameBlur = async () => {
+    const name = procedureName.trim();
+    if (!name || procedureNotes.trim()) return; // don't overwrite notes already typed
+    const { data } = await supabase
+      .from('surgeries')
+      .select('procedure_notes')
+      .ilike('procedure_name', name)
+      .not('procedure_notes', 'is', null)
+      .order('surgery_date', { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle();
+    if (data?.procedure_notes) setProcedureNotes(data.procedure_notes);
+  };
+
   const addInvestigation = () => setInvestigations((prev) => [...prev, { name: '', date: '', value: '', notes: '' }]);
   const updateInvestigation = (idx: number, field: keyof InvestigationDraft, value: string) => {
     setInvestigations((prev) => prev.map((inv, i) => (i === idx ? { ...inv, [field]: value } : inv)));
@@ -161,7 +179,8 @@ export default function PatientRegistrationWizard({ hospitals, defaultHospitalId
         fees: fees ? parseFloat(fees) : 0,
         diagnosis: diagnosis || null,
         patient_type: patientType,
-        prescription: patientType === 'op' ? prescription : treatmentType === 'non_surgical' ? treatmentDetails : '',
+        prescription: (patientType === 'op' || patientType === 'opinion') ? prescription : treatmentType === 'non_surgical' ? treatmentDetails : '',
+        prescription_items: patientType === 'ip' ? prescriptionItems : DEFAULT_PRESCRIPTION,
         treatment_type: patientType === 'ip' ? treatmentType : null,
         admission_date: patientType === 'ip' ? (admissionDate || null) : null,
         surgery_date: treatmentType === 'surgical' ? (surgeryDate || null) : null,
@@ -212,10 +231,16 @@ export default function PatientRegistrationWizard({ hospitals, defaultHospitalId
         );
       }
 
-      // Keep hospital daily-entry OP/IP counters in sync
+      // Keep hospital daily-entry OP/IP/Opinion counters in sync
       await upsertDailyEntryCount(user.id, hospitalId, today, patientType!);
+      const { created, id } = await ensurePresentAttendance(user.id, hospitalId, today);
 
-      onDone();
+      setSaving(false);
+      if (created && id) {
+        setNewAttendanceId(id); // shows the duty-type prompt; onDone() fires when it closes
+      } else {
+        onDone();
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong.');
       setSaving(false);
@@ -303,8 +328,8 @@ export default function PatientRegistrationWizard({ hospitals, defaultHospitalId
 
         {currentStep === 'op_or_ip' && (
           <div>
-            <p className="text-sm font-medium text-slate-600 mb-3">Is this an OP or IP visit? *</p>
-            <div className="grid grid-cols-2 gap-3">
+            <p className="text-sm font-medium text-slate-600 mb-3">What kind of visit is this? *</p>
+            <div className="grid grid-cols-3 gap-3">
               <button
                 type="button"
                 onClick={() => setPatientType('op')}
@@ -322,6 +347,15 @@ export default function PatientRegistrationWizard({ hospitals, defaultHospitalId
                 <Stethoscope className="w-6 h-6 text-violet-600 mb-2" />
                 <p className="font-semibold text-slate-700">IP</p>
                 <p className="text-xs text-slate-400 mt-1">Admitted patient</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => setPatientType('opinion')}
+                className={`p-5 rounded-xl border-2 text-left transition ${patientType === 'opinion' ? 'border-amber-500 bg-amber-50' : 'border-slate-200 hover:border-slate-300'}`}
+              >
+                <MessageCircleQuestion className="w-6 h-6 text-amber-600 mb-2" />
+                <p className="font-semibold text-slate-700">Opinion</p>
+                <p className="text-xs text-slate-400 mt-1">Consult only</p>
               </button>
             </div>
           </div>
@@ -380,7 +414,7 @@ export default function PatientRegistrationWizard({ hospitals, defaultHospitalId
             </div>
             <div>
               <label htmlFor="w-procedure-name" className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Name</label>
-              <input id="w-procedure-name" name="procedureName" type="text" value={procedureName} onChange={(e) => setProcedureName(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" placeholder="e.g. Laparoscopic Cholecystectomy" autoFocus />
+              <input id="w-procedure-name" name="procedureName" type="text" value={procedureName} onChange={(e) => setProcedureName(e.target.value)} onBlur={handleProcedureNameBlur} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" placeholder="e.g. Laparoscopic Cholecystectomy" autoFocus />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -485,6 +519,10 @@ export default function PatientRegistrationWizard({ hospitals, defaultHospitalId
               <textarea id="w-discharge-advice" name="dischargeAdvice" value={dischargeAdvice} onChange={(e) => setDischargeAdvice(e.target.value)} rows={4} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition resize-none" placeholder="Medications, precautions, diet advice..." autoFocus />
             </div>
             <div>
+              <label className="block text-sm font-medium text-slate-600 mb-1.5">Prescription</label>
+              <PrescriptionTable value={prescriptionItems} onChange={setPrescriptionItems} />
+            </div>
+            <div>
               <label htmlFor="w-discharge-date" className="block text-sm font-medium text-slate-600 mb-1.5">Discharge Date</label>
               <input id="w-discharge-date" name="dischargeDate" type="date" value={dischargeDate} onChange={(e) => setDischargeDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" />
             </div>
@@ -548,6 +586,14 @@ export default function PatientRegistrationWizard({ hospitals, defaultHospitalId
           {saving ? 'Saving...' : isLastStep ? (<><Save className="w-4 h-4" /> Save</>) : (<>Next <ArrowRight className="w-4 h-4" /></>)}
         </button>
       </div>
+
+      {newAttendanceId && (
+        <PresentDutyPrompt
+          attendanceId={newAttendanceId}
+          hospitalName={hospitals.find((h) => h.id === hospitalId)?.name}
+          onClose={() => { setNewAttendanceId(null); onDone(); }}
+        />
+      )}
     </div>
   );
 }

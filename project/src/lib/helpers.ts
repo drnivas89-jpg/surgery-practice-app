@@ -32,7 +32,7 @@ export async function upsertDailyEntryCount(
   userId: string,
   hospitalId: string,
   date: string,
-  type: 'op' | 'ip'
+  type: 'op' | 'ip' | 'opinion'
 ): Promise<void> {
   const monthKey = date.substring(0, 7) + '-01';
   const { data: existing } = await supabase
@@ -45,7 +45,8 @@ export async function upsertDailyEntryCount(
   if (existing) {
     const update: Record<string, number> = {};
     if (type === 'op') update.op_patients = (existing.op_patients || 0) + 1;
-    else update.ip_patients = (existing.ip_patients || 0) + 1;
+    else if (type === 'ip') update.ip_patients = (existing.ip_patients || 0) + 1;
+    else update.opinion_patients = (existing.opinion_patients || 0) + 1;
     await supabase.from('monthly_entries').update(update).eq('id', existing.id);
   } else {
     const payload: Record<string, unknown> = {
@@ -55,12 +56,49 @@ export async function upsertDailyEntryCount(
       month: monthKey,
       op_patients: type === 'op' ? 1 : 0,
       ip_patients: type === 'ip' ? 1 : 0,
+      opinion_patients: type === 'opinion' ? 1 : 0,
       fees_generated: 0,
       fees_received: 0,
       notes: '',
     };
     await supabase.from('monthly_entries').insert(payload);
   }
+}
+
+// Auto-marks the doctor Present at a hospital for a date, the first time
+// any OP/IP/Opinion patient entry (or a manual daily entry) is recorded
+// for that hospital+date. Idempotent — safe to call repeatedly; the second
+// call just returns the existing row instead of creating a duplicate.
+export async function ensurePresentAttendance(
+  userId: string,
+  hospitalId: string,
+  date: string
+): Promise<{ created: boolean; id: string | null }> {
+  const { data: existing } = await supabase
+    .from('attendance')
+    .select('id')
+    .eq('hospital_id', hospitalId)
+    .eq('attendance_date', date)
+    .eq('status', 'present')
+    .maybeSingle();
+
+  if (existing) return { created: false, id: existing.id };
+
+  const { data: inserted, error } = await supabase
+    .from('attendance')
+    .insert({
+      user_id: userId,
+      hospital_id: hospitalId,
+      attendance_date: date,
+      status: 'present',
+      duty_type: 'normal',
+      notes: '',
+    })
+    .select('id')
+    .maybeSingle();
+
+  if (error) return { created: false, id: null };
+  return { created: true, id: inserted?.id ?? null };
 }
 
 export async function uploadImage(

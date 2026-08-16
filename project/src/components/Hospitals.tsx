@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { Hospital, MonthlyEntry, Attendance, Patient, ClassEntry } from '@/lib/types';
-import { formatCurrency, formatDate, uploadImage } from '@/lib/helpers';
+import { formatCurrency, formatDate, uploadImage, ensurePresentAttendance } from '@/lib/helpers';
+import { getColSummary } from '@/lib/col';
 import { Building2, Plus, Trash2, X, Calendar, Pencil, Users, Activity, Clock, CheckCircle2, LogOut, Zap, Search, UserRound, Stethoscope, ArrowRight, GraduationCap, Upload } from 'lucide-react';
 import PatientForm from './PatientForm';
 import PatientRegistrationWizard from './PatientRegistrationWizard';
@@ -45,10 +46,14 @@ export default function Hospitals() {
   const [attHospital, setAttHospital] = useState('');
   const [attDate, setAttDate] = useState(new Date().toISOString().split('T')[0]);
   const [attStatus, setAttStatus] = useState<'present' | 'leave' | 'extra_duty'>('present');
+  const [attDutyType, setAttDutyType] = useState<'normal' | 'duty'>('normal');
   const [attLeaveType, setAttLeaveType] = useState('');
+  const [attCompensatedDate, setAttCompensatedDate] = useState('');
   const [attExtraType, setAttExtraType] = useState('');
   const [attNotes, setAttNotes] = useState('');
   const [attError, setAttError] = useState<string | null>(null);
+
+  const colSummary = useMemo(() => getColSummary(attendance), [attendance]);
 
   // Entry form
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -138,6 +143,7 @@ export default function Hospitals() {
       });
       if (error) { setError(error.message); return; }
     }
+    if (user) await ensurePresentAttendance(user.id, eHospital, eDate);
     setShowEntry(false);
     resetEntryForm();
     load();
@@ -151,7 +157,8 @@ export default function Hospitals() {
 
   const resetAttendanceForm = () => {
     setAttHospital(''); setAttDate(new Date().toISOString().split('T')[0]);
-    setAttStatus('present'); setAttLeaveType(''); setAttExtraType(''); setAttNotes('');
+    setAttStatus('present'); setAttDutyType('normal');
+    setAttLeaveType(''); setAttCompensatedDate(''); setAttExtraType(''); setAttNotes('');
     setAttError(null);
   };
 
@@ -167,12 +174,19 @@ export default function Hospitals() {
       hospital_id: attHospital,
       attendance_date: attDate,
       status: attStatus,
+      duty_type: attStatus === 'present' ? attDutyType : null,
       leave_type: attStatus === 'leave' ? attLeaveType.trim() : null,
+      compensated_working_date: attStatus === 'leave' && attCompensatedDate ? attCompensatedDate : null,
       extra_duty_type: attStatus === 'extra_duty' ? attExtraType.trim() : null,
       notes: attNotes,
     };
     const { error } = await supabase.from('attendance').insert(payload);
-    if (error) { setAttError(error.message); return; }
+    if (error) {
+      setAttError(error.code === '23505'
+        ? 'Attendance is already recorded for this hospital on this date (or that COL credit date is already redeemed).'
+        : error.message);
+      return;
+    }
     setShowAttendance(false);
     resetAttendanceForm();
     load();
@@ -758,10 +772,34 @@ export default function Hospitals() {
                 </button>
               </div>
             </div>
+            {attStatus === 'present' && (
+              <div>
+                <span className="block text-sm font-medium text-slate-600 mb-1.5">Duty Type</span>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setAttDutyType('normal')} className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition ${attDutyType === 'normal' ? 'bg-sky-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                    Normal Duty
+                  </button>
+                  <button type="button" onClick={() => setAttDutyType('duty')} className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition ${attDutyType === 'duty' ? 'bg-sky-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                    Duty
+                  </button>
+                </div>
+              </div>
+            )}
             {attStatus === 'leave' && (
               <div>
                 <label htmlFor="att-leave-type" className="block text-sm font-medium text-slate-600 mb-1.5">Type of Leave *</label>
                 <input id="att-leave-type" name="leaveType" type="text" required value={attLeaveType} onChange={(e) => setAttLeaveType(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="e.g. Casual, Sick, Earned..." />
+              </div>
+            )}
+            {attStatus === 'leave' && colSummary.availableDates.length > 0 && (
+              <div>
+                <label htmlFor="att-compensated-date" className="block text-sm font-medium text-slate-600 mb-1.5">Compensates COL credit (optional)</label>
+                <select id="att-compensated-date" name="compensatedDate" value={attCompensatedDate} onChange={(e) => setAttCompensatedDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none bg-white">
+                  <option value="">Not a COL leave</option>
+                  {colSummary.availableDates.map((c) => (
+                    <option key={c.date} value={c.date}>{formatDate(c.date)} — {c.hospitalName}</option>
+                  ))}
+                </select>
               </div>
             )}
             {attStatus === 'extra_duty' && (

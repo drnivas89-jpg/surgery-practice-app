@@ -1,8 +1,9 @@
-import { useEffect, useState, useMemo } from 'react';
+import { Fragment, useEffect, useState, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { Patient, Hospital, Payment, Surgery, MonthlyEntry, Attendance } from '@/lib/types';
 import { formatDate, formatCurrency, daysUntil } from '@/lib/helpers';
+import { getColSummary } from '@/lib/col';
 import { View } from './Layout';
 import {
   Calendar,
@@ -18,7 +19,45 @@ import {
   Search,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  X,
 } from 'lucide-react';
+
+const SURGERY_CATEGORIES = ['Major', 'Minor', 'Bedside', 'Endoscopy', 'Others'] as const;
+
+function categorize(surgeryType: string | null | undefined): typeof SURGERY_CATEGORIES[number] {
+  const t = (surgeryType || '').trim().toLowerCase();
+  const match = SURGERY_CATEGORIES.find((c) => c.toLowerCase() === t);
+  return match || 'Others';
+}
+
+interface DateListRow {
+  date: string;
+  hospitalName: string;
+  detail?: string;
+}
+
+function DateListModal({ title, rows, onClose }: { title: string; rows: DateListRow[]; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-lg w-full max-w-sm p-5 max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-slate-700">{title}</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="space-y-1.5">
+          {rows.map((r, i) => (
+            <div key={i} className="flex justify-between text-sm border-b border-slate-50 last:border-0 py-1.5">
+              <span className="text-slate-700">{formatDate(r.date)}</span>
+              <span className="text-slate-400">{r.hospitalName}{r.detail ? ` · ${r.detail}` : ''}</span>
+            </div>
+          ))}
+          {rows.length === 0 && <p className="text-sm text-slate-400 py-2">No dates to show.</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -44,6 +83,8 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const [monthlyEntries, setMonthlyEntries] = useState<MonthlyEntry[]>([]);
   const [attendance, setAttendance] = useState<Attendance[]>([]);
   const [loading, setLoading] = useState(true);
+  const [expandedHospitalId, setExpandedHospitalId] = useState<string | null>(null);
+  const [dateListModal, setDateListModal] = useState<{ title: string; rows: DateListRow[] } | null>(null);
 
   const now = new Date();
   const [selectedYear, setSelectedYear] = useState(now.getFullYear());
@@ -155,6 +196,18 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     return m === selectedMonthKey;
   });
 
+  // Every calendar date in the selected month, up to today if it's the
+  // current month (future dates can't be "missing" yet).
+  const elapsedDates: string[] = [];
+  {
+    const lastDay = new Date(selectedYear, selectedMonth + 1, 0).getDate();
+    for (let d = 1; d <= lastDay; d++) {
+      const dateStr = `${selectedMonthKey}-${String(d).padStart(2, '0')}`;
+      if (dateStr > todayStr) break;
+      elapsedDates.push(dateStr);
+    }
+  }
+
   const hospitalSummary = hospitals.map((h) => {
     // This month
     const hospMonthEntries = monthEntries.filter((me) => me.hospital_id === h.id);
@@ -191,12 +244,37 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     // Attendance (selected month)
     const hospAtt = monthAttendance.filter((a) => a.hospital_id === h.id);
     const present = hospAtt.filter((a) => a.status === 'present').length;
+    const duties = hospAtt.filter((a) => a.status === 'present' && a.duty_type === 'duty');
     const leaves = hospAtt.filter((a) => a.status === 'leave');
     const extraDuties = hospAtt.filter((a) => a.status === 'extra_duty');
     const leaveTypes: Record<string, number> = {};
     leaves.forEach((l) => { const t = l.leave_type || 'Unknown'; leaveTypes[t] = (leaveTypes[t] || 0) + 1; });
     const extraTypes: Record<string, number> = {};
     extraDuties.forEach((e) => { const t = e.extra_duty_type || 'Unknown'; extraTypes[t] = (extraTypes[t] || 0) + 1; });
+
+    // Missing-entry dates: elapsed days with neither a daily entry nor an
+    // attendance record for this hospital.
+    const datesWithEntry = new Set<string>([
+      ...hospMonthEntries.map((me) => (me.entry_date || me.month).substring(0, 10)),
+      ...hospAtt.map((a) => a.attendance_date),
+    ]);
+    const missingEntryDates = elapsedDates.filter((d) => !datesWithEntry.has(d));
+
+    // Date-wise breakdown for the drill-down (built once here so expanding
+    // a row needs no extra query — everything's already in memory).
+    const dayMap = new Map<string, { date: string; attendance: Attendance[]; patients: Patient[]; surgeries: Surgery[]; entry: MonthlyEntry | null }>();
+    const ensureDay = (date: string) => {
+      if (!dayMap.has(date)) dayMap.set(date, { date, attendance: [], patients: [], surgeries: [], entry: null });
+      return dayMap.get(date)!;
+    };
+    hospAtt.forEach((a) => ensureDay(a.attendance_date).attendance.push(a));
+    hospMonthEntries.forEach((me) => { ensureDay((me.entry_date || me.month).substring(0, 10)).entry = me; });
+    hospMonthPatients.forEach((p) => {
+      const d = [p.admission_date, p.surgery_date, p.follow_up_date, p.created_at].find(Boolean);
+      if (d) ensureDay(d.substring(0, 10)).patients.push(p);
+    });
+    hospMonthSurgeries.forEach((s) => { if (s.surgery_date) ensureDay(s.surgery_date.substring(0, 10)).surgeries.push(s); });
+    const days = Array.from(dayMap.values()).sort((a, b) => b.date.localeCompare(a.date));
 
     return {
       hospital: h,
@@ -208,10 +286,15 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       feesReceived,
       overallPending,
       present,
+      dutyCount: duties.length,
+      dutyDates: duties.map((d) => d.attendance_date),
       leaveCount: leaves.length,
       extraCount: extraDuties.length,
       leaveTypes,
       extraTypes,
+      leaveDates: leaves.map((l) => ({ date: l.attendance_date, detail: l.leave_type || undefined })),
+      missingEntryDates,
+      days,
       hasActivity:
         opCount > 0 || ipCount > 0 || opinionCount > 0 || surgeriesCount > 0 || feesGenerated > 0 ||
         present > 0 || leaves.length > 0 || extraDuties.length > 0 || overallPending !== 0,
@@ -277,26 +360,29 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     violet: 'bg-violet-50 text-violet-600',
   };
 
-  const allColExtra = attendance
-    .filter((a) => a.status === 'extra_duty' && (a.extra_duty_type || '').toLowerCase() === 'col')
-    .sort((a, b) => a.attendance_date.localeCompare(b.attendance_date));
+  const colSummary = getColSummary(attendance);
+  const colAvailableSet = new Set(colSummary.availableDates.map((d) => d.date));
 
-  const allLeaves = attendance
-    .filter((a) => a.status === 'leave')
-    .sort((a, b) => a.attendance_date.localeCompare(b.attendance_date));
+  const surgeryCategoryCounts = SURGERY_CATEGORIES.reduce((acc, c) => ({ ...acc, [c]: 0 }), {} as Record<string, number>);
+  monthSurgeries.forEach((s) => { surgeryCategoryCounts[categorize(s.surgery_type)]++; });
 
-  const struckColDates = new Set<string>();
-  for (const leave of allLeaves) {
-    const colBefore = allColExtra
-      .filter((c) => c.attendance_date <= leave.attendance_date)
-      .map((c) => c.attendance_date);
-    for (const d of colBefore) {
-      if (!struckColDates.has(d)) {
-        struckColDates.add(d);
-        break;
-      }
-    }
-  }
+  const openDutyDrilldown = (hs: typeof hospitalSummary[number]) => {
+    setDateListModal({
+      title: `Duty Dates — ${hs.hospital.name}`,
+      rows: hs.dutyDates.map((date) => ({ date, hospitalName: hs.hospital.name })),
+    });
+  };
+
+  const openLeaveDrilldown = (leaveType?: string) => {
+    const rows: DateListRow[] = [];
+    hospitalSummary.forEach((hs) => {
+      hs.leaveDates
+        .filter((l) => !leaveType || l.detail === leaveType)
+        .forEach((l) => rows.push({ date: l.date, hospitalName: hs.hospital.name, detail: l.detail }));
+    });
+    rows.sort((a, b) => b.date.localeCompare(a.date));
+    setDateListModal({ title: leaveType ? `Leave Dates — ${leaveType}` : 'All Leave Dates', rows });
+  };
 
   return (
     <div className="space-y-6">
@@ -436,51 +522,125 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                   <th className="px-3 py-2 font-medium text-right">Fees Rec.</th>
                   <th className="px-3 py-2 font-medium text-right">Pending (Overall)</th>
                   <th className="px-3 py-2 font-medium text-right">Present</th>
-                  <th className="px-3 py-2 font-medium">Leave</th>
+                  <th className="px-3 py-2 font-medium text-right">Duties</th>
+                  <th className="px-3 py-2 font-medium text-right">Leaves</th>
                   <th className="px-3 py-2 font-medium">Extra Duty</th>
+                  <th className="px-3 py-2 font-medium text-right">Missing</th>
                 </tr>
               </thead>
               <tbody>
                 {hospitalSummary.map((hs) => (
-                  <tr key={hs.hospital.id} className="border-b border-slate-50 hover:bg-slate-50 transition align-top">
-                    <td className="px-3 py-2.5 font-medium text-slate-700">{hs.hospital.name}</td>
-                    <td className="px-3 py-2.5 text-right text-sky-700 font-medium">{hs.opCount}</td>
-                    <td className="px-3 py-2.5 text-right text-emerald-700 font-medium">{hs.ipCount}</td>
-                    <td className="px-3 py-2.5 text-right text-amber-700 font-medium">{hs.opinionCount}</td>
-                    <td className="px-3 py-2.5 text-right text-violet-700 font-medium">{hs.surgeriesCount}</td>
-                    <td className="px-3 py-2.5 text-right text-slate-600">{formatCurrency(hs.feesGenerated)}</td>
-                    <td className="px-3 py-2.5 text-right text-emerald-600">{formatCurrency(hs.feesReceived)}</td>
-                    <td className={`px-3 py-2.5 text-right font-medium ${hs.overallPending > 0 ? 'text-red-600' : 'text-slate-500'}`}>
-                      {formatCurrency(hs.overallPending)}
-                    </td>
-                    <td className="px-3 py-2.5 text-right text-slate-600">{hs.present}</td>
-                    <td className="px-3 py-2.5">
-                      {hs.leaveCount === 0 ? (
-                        <span className="text-slate-300">—</span>
-                      ) : (
-                        <div className="flex flex-wrap gap-1">
-                          {Object.entries(hs.leaveTypes).map(([type, count]) => (
-                            <span key={type} className="text-xs font-medium text-red-700 bg-red-50 px-2 py-0.5 rounded-full">
-                              {type}: {count}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-3 py-2.5">
-                      {hs.extraCount === 0 ? (
-                        <span className="text-slate-300">—</span>
-                      ) : (
-                        <div className="flex flex-wrap gap-1">
-                          {Object.entries(hs.extraTypes).map(([type, count]) => (
-                            <span key={type} className="text-xs font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">
-                              {type}: {count}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
+                  <Fragment key={hs.hospital.id}>
+                    <tr
+                      onClick={() => setExpandedHospitalId(expandedHospitalId === hs.hospital.id ? null : hs.hospital.id)}
+                      className="border-b border-slate-50 hover:bg-slate-50 transition align-top cursor-pointer"
+                    >
+                      <td className="px-3 py-2.5 font-medium text-slate-700 flex items-center gap-1.5">
+                        <ChevronDown className={`w-3.5 h-3.5 text-slate-300 transition-transform ${expandedHospitalId === hs.hospital.id ? 'rotate-180' : ''}`} />
+                        {hs.hospital.name}
+                      </td>
+                      <td className="px-3 py-2.5 text-right text-sky-700 font-medium">{hs.opCount}</td>
+                      <td className="px-3 py-2.5 text-right text-emerald-700 font-medium">{hs.ipCount}</td>
+                      <td className="px-3 py-2.5 text-right text-amber-700 font-medium">{hs.opinionCount}</td>
+                      <td className="px-3 py-2.5 text-right text-violet-700 font-medium">{hs.surgeriesCount}</td>
+                      <td className="px-3 py-2.5 text-right text-slate-600">{formatCurrency(hs.feesGenerated)}</td>
+                      <td className="px-3 py-2.5 text-right text-emerald-600">{formatCurrency(hs.feesReceived)}</td>
+                      <td className={`px-3 py-2.5 text-right font-medium ${hs.overallPending > 0 ? 'text-red-600' : 'text-slate-500'}`}>
+                        {formatCurrency(hs.overallPending)}
+                      </td>
+                      <td className="px-3 py-2.5 text-right text-slate-600">{hs.present}</td>
+                      <td className="px-3 py-2.5 text-right">
+                        {hs.dutyCount === 0 ? (
+                          <span className="text-slate-300">0</span>
+                        ) : (
+                          <button onClick={(e) => { e.stopPropagation(); openDutyDrilldown(hs); }} className="text-sky-600 font-medium underline decoration-dotted hover:text-sky-700">
+                            {hs.dutyCount}
+                          </button>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        {hs.leaveCount === 0 ? (
+                          <span className="text-slate-300">—</span>
+                        ) : (
+                          <div className="flex flex-wrap gap-1 justify-end">
+                            {Object.entries(hs.leaveTypes).map(([type, count]) => (
+                              <button
+                                key={type}
+                                onClick={(e) => { e.stopPropagation(); openLeaveDrilldown(type === 'Unknown' ? undefined : type); }}
+                                className="text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 px-2 py-0.5 rounded-full transition"
+                              >
+                                {type}: {count}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        {hs.extraCount === 0 ? (
+                          <span className="text-slate-300">—</span>
+                        ) : (
+                          <div className="flex flex-wrap gap-1">
+                            {Object.entries(hs.extraTypes).map(([type, count]) => (
+                              <span key={type} className="text-xs font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">
+                                {type}: {count}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5 text-right">
+                        {hs.missingEntryDates.length === 0 ? (
+                          <span className="text-slate-300">0</span>
+                        ) : (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setDateListModal({ title: `Missing Entries — ${hs.hospital.name}`, rows: hs.missingEntryDates.map((date) => ({ date, hospitalName: hs.hospital.name })) }); }}
+                            className="text-red-600 font-medium underline decoration-dotted hover:text-red-700"
+                          >
+                            {hs.missingEntryDates.length}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {expandedHospitalId === hs.hospital.id && (
+                      <tr className="border-b border-slate-50">
+                        <td colSpan={13} className="bg-slate-50 px-3 py-3">
+                          {hs.days.length === 0 ? (
+                            <p className="text-sm text-slate-400 py-2">No date-wise records this month.</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {hs.days.map((d) => (
+                                <div key={d.date} className="bg-white border border-slate-200 rounded-lg p-2.5 text-sm">
+                                  <div className="flex items-center justify-between">
+                                    <span className="font-medium text-slate-700">{formatDate(d.date)}</span>
+                                    {d.attendance.map((a) => (
+                                      <span key={a.id} className="text-xs text-slate-400">
+                                        {a.status === 'present' ? (a.duty_type === 'duty' ? 'Duty' : 'Present') : a.status === 'leave' ? `Leave${a.leave_type ? ` (${a.leave_type})` : ''}` : `Extra Duty${a.extra_duty_type ? ` (${a.extra_duty_type})` : ''}`}
+                                      </span>
+                                    ))}
+                                  </div>
+                                  {d.entry && (
+                                    <p className="text-xs text-slate-500 mt-1">
+                                      Daily entry — OP {d.entry.op_patients}, IP {d.entry.ip_patients}, Opinion {d.entry.opinion_patients}, {formatCurrency(d.entry.fees_generated)} generated
+                                    </p>
+                                  )}
+                                  {d.patients.map((p) => (
+                                    <p key={p.id} className="text-xs text-slate-500 mt-1">
+                                      {p.patient_type === 'ip' ? '🏥' : p.patient_type === 'opinion' ? '💬' : '🩺'} {p.patient_name} ({p.unique_id}) — {formatCurrency(p.fees || 0)}
+                                    </p>
+                                  ))}
+                                  {d.surgeries.map((s) => (
+                                    <p key={s.id} className="text-xs text-slate-500 mt-1">
+                                      🔪 {s.procedure_name} ({categorize(s.surgery_type)})
+                                    </p>
+                                  ))}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -557,40 +717,45 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
 
       {/* COL Tracking */}
       <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <Zap className="w-4 h-4 text-amber-500" />
-          <h2 className="font-semibold text-slate-700">COL Extra Duty Tracking</h2>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Zap className="w-4 h-4 text-amber-500" />
+            <h2 className="font-semibold text-slate-700">COL Extra Duty Tracking</h2>
+          </div>
+          <button onClick={() => onNavigate('col')} className="text-xs font-medium text-sky-600 hover:text-sky-700">
+            Full COL Dashboard →
+          </button>
         </div>
-        {allColExtra.length === 0 ? (
+        {colSummary.creditDates.length === 0 ? (
           <p className="text-sm text-slate-400 py-4 text-center">No COL extra duties recorded.</p>
         ) : (
           <div className="space-y-2">
             <p className="text-xs text-slate-500 mb-2">
-              COL dates struck through have been compensated by a leave taken on or after that date.
+              COL dates struck through have been compensated by a leave.
             </p>
-            {allColExtra.map((c) => {
-              const struck = struckColDates.has(c.attendance_date);
+            {colSummary.creditDates.map((c) => {
+              const available = colAvailableSet.has(c.date);
               return (
                 <div
-                  key={c.id}
+                  key={c.attendanceId}
                   className={`flex items-center gap-3 p-3 rounded-lg border ${
-                    struck ? 'border-slate-200 bg-slate-50' : 'border-amber-200 bg-amber-50'
+                    available ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-slate-50'
                   }`}
                 >
                   <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                    struck ? 'bg-slate-200 text-slate-400' : 'bg-amber-100 text-amber-600'
+                    available ? 'bg-amber-100 text-amber-600' : 'bg-slate-200 text-slate-400'
                   }`}>
                     <Zap className="w-4 h-4" />
                   </div>
                   <div className="flex-1">
-                    <p className={`text-sm font-medium ${struck ? 'text-slate-400 line-through' : 'text-slate-700'}`}>
-                      {formatDate(c.attendance_date)}
+                    <p className={`text-sm font-medium ${available ? 'text-slate-700' : 'text-slate-400 line-through'}`}>
+                      {formatDate(c.date)}
                     </p>
                     <p className="text-xs text-slate-400">
-                      {c.hospital?.name || '—'}{struck ? ' — Compensated by leave' : ''}
+                      {c.hospitalName}{!available ? ' — Compensated by leave' : ''}
                     </p>
                   </div>
-                  {struck && (
+                  {!available && (
                     <span className="text-xs font-medium text-slate-400 bg-slate-100 px-2 py-1 rounded">
                       Struck
                     </span>
@@ -600,6 +765,19 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
             })}
           </div>
         )}
+      </div>
+
+      {/* Surgery categorization */}
+      <div className="bg-white rounded-xl border border-slate-200 p-5">
+        <h2 className="font-semibold text-slate-700 mb-4">Surgeries by Category — {MONTHS[selectedMonth]} {selectedYear}</h2>
+        <div className="grid grid-cols-5 gap-2 text-center">
+          {SURGERY_CATEGORIES.map((c) => (
+            <div key={c} className="p-2">
+              <p className="text-xl font-bold text-slate-800">{surgeryCategoryCounts[c]}</p>
+              <p className="text-[11px] text-slate-400">{c}</p>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Patients this month with search */}
@@ -653,6 +831,10 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
           </div>
         )}
       </div>
+
+      {dateListModal && (
+        <DateListModal title={dateListModal.title} rows={dateListModal.rows} onClose={() => setDateListModal(null)} />
+      )}
     </div>
   );
 }

@@ -2,8 +2,10 @@ import { useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { Patient, Hospital } from '@/lib/types';
-import { generateUniquePatientId, upsertDailyEntryCount } from '@/lib/helpers';
-import { ArrowLeft, Save, AlertCircle, Stethoscope, FlaskConical, UserRound, ClipboardCheck, Calendar, Phone } from 'lucide-react';
+import { generateUniquePatientId, upsertDailyEntryCount, ensurePresentAttendance } from '@/lib/helpers';
+import PrescriptionTable, { DEFAULT_PRESCRIPTION } from './PrescriptionTable';
+import PresentDutyPrompt from './PresentDutyPrompt';
+import { ArrowLeft, Save, AlertCircle, Stethoscope, FlaskConical, UserRound, MessageCircleQuestion, ClipboardCheck, Calendar, Phone } from 'lucide-react';
 
 interface PatientFormProps {
   hospitals: Hospital[];
@@ -11,7 +13,7 @@ interface PatientFormProps {
   onDone: () => void;
   onCancel: () => void;
   defaultHospitalId?: string;
-  defaultPatientType?: 'op' | 'ip';
+  defaultPatientType?: 'op' | 'ip' | 'opinion';
 }
 
 export default function PatientForm({ hospitals, editPatient, onDone, onCancel, defaultHospitalId, defaultPatientType }: PatientFormProps) {
@@ -24,11 +26,13 @@ export default function PatientForm({ hospitals, editPatient, onDone, onCancel, 
   const [mobileNumber, setMobileNumber] = useState(editPatient?.mobile_number || '');
   const [fees, setFees] = useState(editPatient?.fees?.toString() || '');
 
-  const [patientType, setPatientType] = useState<'op' | 'ip' | null>(editPatient?.patient_type || defaultPatientType || null);
+  const [patientType, setPatientType] = useState<'op' | 'ip' | 'opinion' | null>(editPatient?.patient_type || defaultPatientType || null);
 
   const [admissionDate, setAdmissionDate] = useState(editPatient?.admission_date || '');
   const [dischargeDate, setDischargeDate] = useState(editPatient?.discharge_date || '');
   const [surgeryDate, setSurgeryDate] = useState(editPatient?.surgery_date || '');
+  const [dischargeAdvice, setDischargeAdvice] = useState(editPatient?.discharge_advice || '');
+  const [prescriptionItems, setPrescriptionItems] = useState(editPatient?.prescription_items || DEFAULT_PRESCRIPTION);
 
   const [diagnosis, setDiagnosis] = useState(editPatient?.diagnosis || '');
   const [prescription, setPrescription] = useState(editPatient?.prescription || '');
@@ -38,6 +42,7 @@ export default function PatientForm({ hospitals, editPatient, onDone, onCancel, 
 
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [newAttendanceId, setNewAttendanceId] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,7 +50,7 @@ export default function PatientForm({ hospitals, editPatient, onDone, onCancel, 
     setSaving(true);
 
     if (!hospitalId) { setError('Please select a hospital.'); setSaving(false); return; }
-    if (!patientType) { setError('Please select OP or IP.'); setSaving(false); return; }
+    if (!patientType) { setError('Please select OP, IP, or Opinion.'); setSaving(false); return; }
 
     const today = new Date().toISOString().split('T')[0];
 
@@ -63,21 +68,29 @@ export default function PatientForm({ hospitals, editPatient, onDone, onCancel, 
       admission_date: patientType === 'ip' ? (admissionDate || null) : null,
       discharge_date: patientType === 'ip' ? (dischargeDate || null) : null,
       surgery_date: patientType === 'ip' ? (surgeryDate || null) : null,
+      discharge_advice: patientType === 'ip' ? dischargeAdvice : '',
+      prescription_items: patientType === 'ip' ? prescriptionItems : DEFAULT_PRESCRIPTION,
       follow_up_date: followUpNeeded && followUpDate ? followUpDate : null,
     };
 
     if (editPatient) {
       const { error } = await supabase.from('patients').update(payload).eq('id', editPatient.id);
       if (error) { setError(error.message); setSaving(false); return; }
+      setSaving(false);
+      onDone();
     } else {
       const uniqueId = await generateUniquePatientId(user!.id, hospitalId);
       const { error } = await supabase.from('patients').insert({ ...payload, unique_id: uniqueId });
       if (error) { setError(error.message); setSaving(false); return; }
       await upsertDailyEntryCount(user!.id, hospitalId, today, patientType);
+      const { created, id } = await ensurePresentAttendance(user!.id, hospitalId, today);
+      setSaving(false);
+      if (created && id) {
+        setNewAttendanceId(id); // shows the duty-type prompt; onDone() fires when it closes
+      } else {
+        onDone();
+      }
     }
-
-    setSaving(false);
-    onDone();
   };
 
   return (
@@ -142,23 +155,30 @@ export default function PatientForm({ hospitals, editPatient, onDone, onCancel, 
         {!editPatient && (
           <div className="pt-4 border-t border-slate-100">
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Patient Type *</p>
-            <div className="grid grid-cols-2 gap-3">
-              <button type="button" onClick={() => setPatientType('op')} className={`flex items-center gap-3 p-4 rounded-xl border-2 transition ${patientType === 'op' ? 'border-sky-500 bg-sky-50' : 'border-slate-200 hover:border-slate-300'}`}>
+            <div className="grid grid-cols-3 gap-3">
+              <button type="button" onClick={() => setPatientType('op')} className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition ${patientType === 'op' ? 'border-sky-500 bg-sky-50' : 'border-slate-200 hover:border-slate-300'}`}>
                 <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${patientType === 'op' ? 'bg-sky-600 text-white' : 'bg-slate-100 text-slate-400'}`}><UserRound className="w-5 h-5" /></div>
-                <div className="text-left"><p className="text-sm font-semibold text-slate-700">OP Patient</p><p className="text-xs text-slate-400">Outpatient consultation</p></div>
+                <div className="text-center"><p className="text-sm font-semibold text-slate-700">OP Patient</p><p className="text-xs text-slate-400">Outpatient</p></div>
               </button>
-              <button type="button" onClick={() => setPatientType('ip')} className={`flex items-center gap-3 p-4 rounded-xl border-2 transition ${patientType === 'ip' ? 'border-violet-500 bg-violet-50' : 'border-slate-200 hover:border-slate-300'}`}>
+              <button type="button" onClick={() => setPatientType('ip')} className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition ${patientType === 'ip' ? 'border-violet-500 bg-violet-50' : 'border-slate-200 hover:border-slate-300'}`}>
                 <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${patientType === 'ip' ? 'bg-violet-600 text-white' : 'bg-slate-100 text-slate-400'}`}><Stethoscope className="w-5 h-5" /></div>
-                <div className="text-left"><p className="text-sm font-semibold text-slate-700">IP Patient</p><p className="text-xs text-slate-400">Inpatient / Surgery</p></div>
+                <div className="text-center"><p className="text-sm font-semibold text-slate-700">IP Patient</p><p className="text-xs text-slate-400">Inpatient / Surgery</p></div>
+              </button>
+              <button type="button" onClick={() => setPatientType('opinion')} className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition ${patientType === 'opinion' ? 'border-amber-500 bg-amber-50' : 'border-slate-200 hover:border-slate-300'}`}>
+                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${patientType === 'opinion' ? 'bg-amber-600 text-white' : 'bg-slate-100 text-slate-400'}`}><MessageCircleQuestion className="w-5 h-5" /></div>
+                <div className="text-center"><p className="text-sm font-semibold text-slate-700">Opinion</p><p className="text-xs text-slate-400">Consult only</p></div>
               </button>
             </div>
+            <p className="text-xs text-slate-400 mt-2">
+              For quick opinion visits you don't need to track individually, use the "Opinion Entry" count on the hospital's Daily Entry form instead.
+            </p>
           </div>
         )}
 
-        {(patientType === 'op' || patientType === 'ip') && (
+        {(patientType === 'op' || patientType === 'ip' || patientType === 'opinion') && (
           <div className="pt-4 border-t border-slate-100 space-y-4">
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
-              {patientType === 'ip' ? 'IP Details' : 'OP Details'}
+              {patientType === 'ip' ? 'IP Details' : patientType === 'opinion' ? 'Opinion Details' : 'OP Details'}
             </p>
 
             {patientType === 'ip' && (
@@ -174,6 +194,20 @@ export default function PatientForm({ hospitals, editPatient, onDone, onCancel, 
                 <div>
                   <label htmlFor="p-discharge-date" className="block text-sm font-medium text-slate-600 mb-1.5">Discharge Date</label>
                   <input id="p-discharge-date" name="dischargeDate" type="date" value={dischargeDate} onChange={(e) => setDischargeDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition" />
+                </div>
+              </div>
+            )}
+
+            {patientType === 'ip' && (
+              <div className="p-4 rounded-lg bg-slate-50 border border-slate-100 space-y-3">
+                <p className="text-sm font-semibold text-slate-700">Discharge Advice</p>
+                <div>
+                  <label htmlFor="p-discharge-advice" className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
+                  <textarea id="p-discharge-advice" name="dischargeAdvice" value={dischargeAdvice} onChange={(e) => setDischargeAdvice(e.target.value)} rows={3} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition resize-none" placeholder="Diet, activity, wound care, red-flag symptoms..." />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-600 mb-1.5">Prescription</label>
+                  <PrescriptionTable value={prescriptionItems} onChange={setPrescriptionItems} />
                 </div>
               </div>
             )}
@@ -227,6 +261,14 @@ export default function PatientForm({ hospitals, editPatient, onDone, onCancel, 
           <button type="button" onClick={onCancel} className="px-5 py-2.5 text-slate-600 rounded-lg font-medium hover:bg-slate-100 transition">Cancel</button>
         </div>
       </form>
+
+      {newAttendanceId && (
+        <PresentDutyPrompt
+          attendanceId={newAttendanceId}
+          hospitalName={hospitals.find((h) => h.id === hospitalId)?.name}
+          onClose={() => { setNewAttendanceId(null); onDone(); }}
+        />
+      )}
     </div>
   );
 }

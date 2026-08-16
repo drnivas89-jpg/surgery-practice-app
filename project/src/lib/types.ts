@@ -5,6 +5,18 @@ export interface Hospital {
   created_at: string;
 }
 
+export interface PrescriptionColumn {
+  key: string;
+  label: string;
+}
+
+export type PrescriptionRow = Record<string, string>;
+
+export interface PrescriptionTableData {
+  columns: PrescriptionColumn[];
+  rows: PrescriptionRow[];
+}
+
 export interface Patient {
   id: string;
   user_id: string;
@@ -16,11 +28,12 @@ export interface Patient {
   mobile_number: string | null;
   fees: number;
   prescription: string;
+  prescription_items: PrescriptionTableData;
   admission_date: string | null;
   discharge_date: string | null;
   follow_up_date: string | null;
   surgery_date: string | null;
-  patient_type: 'op' | 'ip' | null;
+  patient_type: 'op' | 'ip' | 'opinion' | null;
   diagnosis: string | null;
   minor_procedure_done: boolean;
   treatment_type: 'surgical' | 'non_surgical' | null;
@@ -37,6 +50,8 @@ export interface Attendance {
   hospital_id: string;
   attendance_date: string;
   status: 'present' | 'leave' | 'extra_duty';
+  duty_type: 'normal' | 'duty' | null;
+  compensated_working_date: string | null;
   leave_type: string | null;
   extra_duty_type: string | null;
   notes: string;

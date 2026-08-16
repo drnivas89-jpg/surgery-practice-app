@@ -107,6 +107,23 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
     setConsentImages([]); setExistingConsentImages([]);
   };
 
+  // Auto-fills operative notes from the most recent identical procedure
+  // name (across all this doctor's patients, per RLS). Never overwrites
+  // notes already typed, and the result stays a normal editable textarea.
+  const handleProcNameBlur = async () => {
+    const name = procName.trim();
+    if (!name || procNotes.trim()) return;
+    const { data } = await supabase
+      .from('surgeries')
+      .select('procedure_notes')
+      .ilike('procedure_name', name)
+      .not('procedure_notes', 'is', null)
+      .order('surgery_date', { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle();
+    if (data?.procedure_notes) setProcNotes(data.procedure_notes);
+  };
+
   const openEditSurgery = (s: Surgery) => {
     setEditingSurgeryId(s.id);
     setProcName(s.procedure_name || '');
@@ -533,7 +550,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
           <form onSubmit={handleSaveSurgery} className="space-y-4">
             <div>
               <label htmlFor="pd-proc-name" className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Name</label>
-              <input id="pd-proc-name" name="procName" type="text" required value={procName} onChange={(e) => setProcName(e.target.value)} className="form-input" placeholder="e.g. Laparoscopic Cholecystectomy" />
+              <input id="pd-proc-name" name="procName" type="text" required value={procName} onChange={(e) => setProcName(e.target.value)} onBlur={handleProcNameBlur} className="form-input" placeholder="e.g. Laparoscopic Cholecystectomy" />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
