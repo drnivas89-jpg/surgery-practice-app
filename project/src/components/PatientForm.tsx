@@ -69,7 +69,7 @@ export default function PatientForm({ hospitals, editPatient, onDone, onCancel, 
       discharge_date: patientType === 'ip' ? (dischargeDate || null) : null,
       surgery_date: patientType === 'ip' ? (surgeryDate || null) : null,
       discharge_advice: patientType === 'ip' ? dischargeAdvice : '',
-      prescription_items: patientType === 'ip' ? prescriptionItems : DEFAULT_PRESCRIPTION,
+      prescription_items: prescriptionItems,
       follow_up_date: followUpNeeded && followUpDate ? followUpDate : null,
     };
 
@@ -198,7 +198,7 @@ export default function PatientForm({ hospitals, editPatient, onDone, onCancel, 
               </div>
             )}
 
-            {patientType === 'ip' && (
+            {patientType === 'ip' ? (
               <div className="p-4 rounded-lg bg-slate-50 border border-slate-100 space-y-3">
                 <p className="text-sm font-semibold text-slate-700">Discharge Advice</p>
                 <div>
@@ -209,6 +209,11 @@ export default function PatientForm({ hospitals, editPatient, onDone, onCancel, 
                   <label className="block text-sm font-medium text-slate-600 mb-1.5">Prescription</label>
                   <PrescriptionTable value={prescriptionItems} onChange={setPrescriptionItems} />
                 </div>
+              </div>
+            ) : (
+              <div className="p-4 rounded-lg bg-slate-50 border border-slate-100 space-y-3">
+                <p className="text-sm font-semibold text-slate-700">Prescription</p>
+                <PrescriptionTable value={prescriptionItems} onChange={setPrescriptionItems} />
               </div>
             )}
 

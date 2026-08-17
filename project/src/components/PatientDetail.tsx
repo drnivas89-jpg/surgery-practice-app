@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import { Patient, Surgery, FollowUp, Payment, SurgeryType, Investigation, ConsentProforma } from '@/lib/types';
-import { formatDate, formatCurrency, uploadImage, getImageUrl } from '@/lib/helpers';
+import { Patient, Surgery, FollowUp, Payment, SurgeryType, Investigation, Vitals } from '@/lib/types';
+import { formatDate, formatCurrency, uploadImage, getImageUrl, ensurePresentAttendance } from '@/lib/helpers';
+import PrescriptionTable from './PrescriptionTable';
+import PresentDutyPrompt from './PresentDutyPrompt';
 import {
-  ArrowLeft, Pencil, Activity, Calendar, FlaskConical, IndianRupee, Plus, X,
-  Trash2, Settings, TestTube,
+  ArrowLeft, Pencil, Activity, UserRound, FlaskConical, IndianRupee, Plus, X,
+  Trash2, Settings, TestTube, HeartPulse, ClipboardCheck,
 } from 'lucide-react';
 
 interface PatientDetailProps {
@@ -15,18 +17,37 @@ interface PatientDetailProps {
   onNewVisit?: (p: Patient) => void;
 }
 
+const TABS = [
+  { id: 'basic', label: 'Basic Details', icon: UserRound },
+  { id: 'investigations', label: 'Investigations', icon: TestTube },
+  { id: 'surgery', label: 'Surgery / Procedure', icon: Activity },
+  { id: 'discharge', label: 'Discharge Summary', icon: ClipboardCheck },
+  { id: 'followups', label: 'Follow-ups', icon: FlaskConical },
+  { id: 'payments', label: 'Payments', icon: IndianRupee },
+] as const;
+type TabId = typeof TABS[number]['id'];
+
+const PATIENT_NUMBER_LABEL: Record<string, string> = {
+  op: 'OP No.',
+  ip: 'IP No.',
+  opinion: 'Opinion No.',
+};
+
 export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }: PatientDetailProps) {
   const { user } = useAuth();
+  const [activeTab, setActiveTab] = useState<TabId>('basic');
   const [patient, setPatient] = useState<Patient | null>(null);
   const [surgeries, setSurgeries] = useState<Surgery[]>([]);
   const [followUps, setFollowUps] = useState<FollowUp[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [investigations, setInvestigations] = useState<Investigation[]>([]);
+  const [vitals, setVitals] = useState<Vitals[]>([]);
   const [loading, setLoading] = useState(true);
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
   const [surgeryTypes, setSurgeryTypes] = useState<SurgeryType[]>([]);
   const [showTypeManager, setShowTypeManager] = useState(false);
   const [newTypeName, setNewTypeName] = useState('');
+  const [newAttendanceId, setNewAttendanceId] = useState<string | null>(null);
 
   // Surgery form
   const [showSurgeryForm, setShowSurgeryForm] = useState(false);
@@ -68,14 +89,27 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   const [invValue, setInvValue] = useState('');
   const [invNotes, setInvNotes] = useState('');
 
+  // Vitals form
+  const [showVitalsForm, setShowVitalsForm] = useState(false);
+  const [editingVitalsId, setEditingVitalsId] = useState<string | null>(null);
+  const [vDate, setVDate] = useState(new Date().toISOString().split('T')[0]);
+  const [vBpSys, setVBpSys] = useState('');
+  const [vBpDia, setVBpDia] = useState('');
+  const [vPulse, setVPulse] = useState('');
+  const [vTemp, setVTemp] = useState('');
+  const [vSpo2, setVSpo2] = useState('');
+  const [vRR, setVRR] = useState('');
+  const [vNotes, setVNotes] = useState('');
+
   const load = async () => {
-    const [{ data: p }, { data: s }, { data: f }, { data: pay }, { data: st }, { data: inv }] = await Promise.all([
+    const [{ data: p }, { data: s }, { data: f }, { data: pay }, { data: st }, { data: inv }, { data: vit }] = await Promise.all([
       supabase.from('patients').select('*, hospital:hospitals(*)').eq('id', patientId).maybeSingle(),
       supabase.from('surgeries').select('*').eq('patient_id', patientId).order('created_at', { ascending: false }),
       supabase.from('follow_ups').select('*').eq('patient_id', patientId).order('created_at', { ascending: false }),
       supabase.from('payments').select('*').eq('patient_id', patientId).order('payment_date', { ascending: false }),
       supabase.from('surgery_types').select('*').order('name'),
       supabase.from('investigations').select('*').eq('patient_id', patientId).order('investigation_date', { ascending: false }),
+      supabase.from('vitals').select('*').eq('patient_id', patientId).order('recorded_at', { ascending: false }),
     ]);
     setSurgeryTypes(st || []);
     setPatient(p);
@@ -83,6 +117,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
     setFollowUps(f || []);
     setPayments(pay || []);
     setInvestigations(inv || []);
+    setVitals(vit || []);
     setLoading(false);
 
     const allPaths = [
@@ -98,6 +133,15 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   };
 
   useEffect(() => { load(); }, [patientId]);
+
+  // Records a Present day for the patient's hospital, on the given date
+  // (falling back to today if blank), and offers the duty-type prompt if
+  // this was a brand new attendance row rather than an already-existing one.
+  const markPresentFor = async (date: string | null | undefined) => {
+    if (!user || !patient) return;
+    const { created, id } = await ensurePresentAttendance(user.id, patient.hospital_id, date || new Date().toISOString().split('T')[0]);
+    if (created && id) setNewAttendanceId(id);
+  };
 
   // --- Surgery handlers ---
   const resetSurgeryForm = () => {
@@ -142,12 +186,12 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   const handleSaveSurgery = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
-    let imagePaths = [...existingSurgeryImages];
+    const imagePaths = [...existingSurgeryImages];
     for (const file of surgeryImages) {
       const path = await uploadImage(file, user.id, 'surgery');
       if (path) imagePaths.push(path);
     }
-    let consentPaths = [...existingConsentImages];
+    const consentPaths = [...existingConsentImages];
     for (const file of consentImages) {
       const path = await uploadImage(file, user.id, 'consent');
       if (path) consentPaths.push(path);
@@ -162,6 +206,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
       await supabase.from('surgeries').update(payload).eq('id', editingSurgeryId);
     } else {
       await supabase.from('surgeries').insert({ ...payload, patient_id: patientId });
+      await markPresentFor(surgeryDate);
     }
     setShowSurgeryForm(false);
     resetSurgeryForm();
@@ -196,7 +241,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   const handleSaveFollowUp = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
-    let imagePaths = [...existingReportImages];
+    const imagePaths = [...existingReportImages];
     for (const file of reportImages) {
       const path = await uploadImage(file, user.id, 'followup');
       if (path) imagePaths.push(path);
@@ -285,6 +330,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
       await supabase.from('investigations').update(payload).eq('id', editingInvestigationId);
     } else {
       await supabase.from('investigations').insert({ ...payload, patient_id: patientId });
+      await markPresentFor(invDate);
     }
     setShowInvestigationForm(false);
     resetInvestigationForm();
@@ -294,6 +340,55 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   const handleDeleteInvestigation = async (id: string) => {
     if (!confirm('Delete this investigation record?')) return;
     await supabase.from('investigations').delete().eq('id', id);
+    load();
+  };
+
+  // --- Vitals handlers ---
+  const resetVitalsForm = () => {
+    setEditingVitalsId(null);
+    setVDate(new Date().toISOString().split('T')[0]);
+    setVBpSys(''); setVBpDia(''); setVPulse(''); setVTemp(''); setVSpo2(''); setVRR(''); setVNotes('');
+  };
+
+  const openEditVitals = (v: Vitals) => {
+    setEditingVitalsId(v.id);
+    setVDate(v.recorded_at ? v.recorded_at.substring(0, 10) : new Date().toISOString().split('T')[0]);
+    setVBpSys(v.bp_systolic?.toString() || '');
+    setVBpDia(v.bp_diastolic?.toString() || '');
+    setVPulse(v.pulse?.toString() || '');
+    setVTemp(v.temperature?.toString() || '');
+    setVSpo2(v.spo2?.toString() || '');
+    setVRR(v.respiratory_rate?.toString() || '');
+    setVNotes(v.notes || '');
+    setShowVitalsForm(true);
+  };
+
+  const handleSaveVitals = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    const payload = {
+      recorded_at: vDate,
+      bp_systolic: vBpSys ? parseInt(vBpSys) : null,
+      bp_diastolic: vBpDia ? parseInt(vBpDia) : null,
+      pulse: vPulse ? parseInt(vPulse) : null,
+      temperature: vTemp ? parseFloat(vTemp) : null,
+      spo2: vSpo2 ? parseInt(vSpo2) : null,
+      respiratory_rate: vRR ? parseInt(vRR) : null,
+      notes: vNotes,
+    };
+    if (editingVitalsId) {
+      await supabase.from('vitals').update(payload).eq('id', editingVitalsId);
+    } else {
+      await supabase.from('vitals').insert({ ...payload, patient_id: patientId, user_id: user.id });
+    }
+    setShowVitalsForm(false);
+    resetVitalsForm();
+    load();
+  };
+
+  const handleDeleteVitals = async (id: string) => {
+    if (!confirm('Delete this vitals reading?')) return;
+    await supabase.from('vitals').delete().eq('id', id);
     load();
   };
 
@@ -325,18 +420,21 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
 
   const totalReceived = payments.reduce((s, p) => s + p.amount, 0);
   const pending = (patient.fees || 0) - totalReceived;
+  const numberLabel = patient.patient_type ? PATIENT_NUMBER_LABEL[patient.patient_type] : null;
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-3">
           <button onClick={onBack} className="p-2 rounded-lg hover:bg-slate-100 transition">
             <ArrowLeft className="w-5 h-5 text-slate-500" />
           </button>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-2xl font-bold text-slate-800">{patient.patient_name}</h1>
-              <span className="text-xs font-mono bg-sky-50 text-sky-600 px-2 py-0.5 rounded">{patient.unique_id}</span>
+              <span className="text-xs font-mono bg-sky-50 text-sky-600 px-2 py-0.5 rounded">
+                {numberLabel ? `${numberLabel} ` : ''}{patient.unique_id}
+              </span>
             </div>
             <p className="text-slate-500 text-sm mt-0.5">{patient.hospital?.name}</p>
           </div>
@@ -353,196 +451,262 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
         </div>
       </div>
 
-      {/* Patient Info */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <div className="flex items-center gap-2 mb-4">
-          {patient.patient_type === 'op' ? (
-            <span className="text-xs font-semibold bg-sky-100 text-sky-700 px-2.5 py-1 rounded-full">OP</span>
-          ) : patient.patient_type === 'ip' ? (
-            <span className="text-xs font-semibold bg-violet-100 text-violet-700 px-2.5 py-1 rounded-full">IP</span>
-          ) : null}
-        </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <div><p className="text-xs text-slate-400 uppercase">Age / Sex</p><p className="text-sm font-medium text-slate-700 mt-1">{patient.age ? `${patient.age}y` : '—'} {patient.sex ? `/ ${patient.sex}` : ''}</p></div>
-          {patient.patient_type === 'ip' && (
-            <div><p className="text-xs text-slate-400 uppercase">Admission</p><p className="text-sm font-medium text-slate-700 mt-1">{formatDate(patient.admission_date)}</p></div>
-          )}
-          {patient.patient_type === 'ip' && (
-            <div><p className="text-xs text-slate-400 uppercase">Surgery Date</p><p className="text-sm font-medium text-slate-700 mt-1">{formatDate(patient.surgery_date)}</p></div>
-          )}
-          {patient.patient_type === 'ip' && (
-            <div><p className="text-xs text-slate-400 uppercase">Discharge</p><p className="text-sm font-medium text-slate-700 mt-1">{formatDate(patient.discharge_date)}</p></div>
-          )}
-          <div><p className="text-xs text-slate-400 uppercase">Follow-up</p><p className="text-sm font-medium text-slate-700 mt-1">{formatDate(patient.follow_up_date)}</p></div>
-          {patient.mobile_number && (
-            <div><p className="text-xs text-slate-400 uppercase">Mobile</p><p className="text-sm font-medium text-slate-700 mt-1">{patient.mobile_number}</p></div>
-          )}
-        </div>
-        {patient.diagnosis && (
-          <div className="mt-4 pt-4 border-t border-slate-100">
-            <p className="text-xs text-slate-400 uppercase mb-1">Diagnosis</p>
-            <p className="text-sm text-slate-600">{patient.diagnosis}</p>
-          </div>
-        )}
-        {patient.prescription && (
-          <div className="mt-4 pt-4 border-t border-slate-100">
-            <p className="text-xs text-slate-400 uppercase mb-1">Prescription</p>
-            <p className="text-sm text-slate-600 whitespace-pre-wrap">{patient.prescription}</p>
-          </div>
-        )}
-        {patient.minor_procedure_done && (
-          <div className="mt-4 pt-4 border-t border-slate-100">
-            <p className="text-xs text-slate-400 uppercase mb-1">Minor Procedure</p>
-            <p className="text-sm text-sky-600 font-medium">A minor procedure was performed — see surgery details below.</p>
-          </div>
-        )}
-        <div className="mt-4 pt-4 border-t border-slate-100 grid grid-cols-3 gap-4">
-          <div><p className="text-xs text-slate-400 uppercase">Total Fees</p><p className="text-lg font-bold text-slate-700">{formatCurrency(patient.fees || 0)}</p></div>
-          <div><p className="text-xs text-slate-400 uppercase">Received</p><p className="text-lg font-bold text-emerald-600">{formatCurrency(totalReceived)}</p></div>
-          <div><p className="text-xs text-slate-400 uppercase">Pending</p><p className={`text-lg font-bold ${pending > 0 ? 'text-red-600' : 'text-slate-500'}`}>{formatCurrency(pending)}</p></div>
-        </div>
+      {/* Tab bar */}
+      <div className="flex items-center gap-1 overflow-x-auto border-b border-slate-200">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setActiveTab(t.id)}
+            className={`flex items-center gap-1.5 px-3.5 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition ${
+              activeTab === t.id ? 'border-sky-600 text-sky-700' : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <t.icon className="w-4 h-4" /> {t.label}
+          </button>
+        ))}
       </div>
 
-      {/* Investigations */}
-      <SectionCard icon={TestTube} iconColor="text-teal-500" title="Investigations" onAdd={() => { resetInvestigationForm(); setShowInvestigationForm(true); }} addLabel="Add Investigation">
-        {investigations.length === 0 ? (
-          <p className="text-sm text-slate-400 py-4 text-center">No investigations recorded yet.</p>
-        ) : (
-          <div className="space-y-2">
-            {investigations.map((inv) => (
-              <div key={inv.id} className="flex items-center justify-between border border-slate-100 rounded-lg p-3 group">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-slate-700">{inv.investigation_name}</span>
-                    {inv.investigation_date && <span className="text-xs text-slate-400">{formatDate(inv.investigation_date)}</span>}
-                  </div>
-                  {inv.value && <p className="text-sm text-teal-600 font-medium mt-0.5">Value: {inv.value}</p>}
-                  {inv.notes && <p className="text-xs text-slate-500 mt-0.5">{inv.notes}</p>}
-                </div>
-                <div className="flex items-center gap-1">
-                  <button onClick={() => openEditInvestigation(inv)} className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-sky-500 transition p-1"><Pencil className="w-3.5 h-3.5" /></button>
-                  <button onClick={() => handleDeleteInvestigation(inv.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition p-1"><Trash2 className="w-3.5 h-3.5" /></button>
-                </div>
+      {activeTab === 'basic' && (
+        <div className="space-y-6">
+          <div className="bg-white rounded-xl border border-slate-200 p-5">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <div><p className="text-xs text-slate-400 uppercase">Age / Sex</p><p className="text-sm font-medium text-slate-700 mt-1">{patient.age ? `${patient.age}y` : '—'} {patient.sex ? `/ ${patient.sex}` : ''}</p></div>
+              {patient.patient_type === 'ip' && (
+                <div><p className="text-xs text-slate-400 uppercase">Admission</p><p className="text-sm font-medium text-slate-700 mt-1">{formatDate(patient.admission_date)}</p></div>
+              )}
+              <div><p className="text-xs text-slate-400 uppercase">Follow-up</p><p className="text-sm font-medium text-slate-700 mt-1">{formatDate(patient.follow_up_date)}</p></div>
+              {patient.mobile_number && (
+                <div><p className="text-xs text-slate-400 uppercase">Mobile</p><p className="text-sm font-medium text-slate-700 mt-1">{patient.mobile_number}</p></div>
+              )}
+            </div>
+            {patient.diagnosis && (
+              <div className="mt-4 pt-4 border-t border-slate-100">
+                <p className="text-xs text-slate-400 uppercase mb-1">Diagnosis</p>
+                <p className="text-sm text-slate-600">{patient.diagnosis}</p>
               </div>
-            ))}
+            )}
+            {patient.minor_procedure_done && (
+              <div className="mt-4 pt-4 border-t border-slate-100">
+                <p className="text-xs text-slate-400 uppercase mb-1">Minor Procedure</p>
+                <p className="text-sm text-sky-600 font-medium">A minor procedure was performed — see Surgery / Procedure tab.</p>
+              </div>
+            )}
+            <div className="mt-4 pt-4 border-t border-slate-100 grid grid-cols-3 gap-4">
+              <div><p className="text-xs text-slate-400 uppercase">Total Fees</p><p className="text-lg font-bold text-slate-700">{formatCurrency(patient.fees || 0)}</p></div>
+              <div><p className="text-xs text-slate-400 uppercase">Received</p><p className="text-lg font-bold text-emerald-600">{formatCurrency(totalReceived)}</p></div>
+              <div><p className="text-xs text-slate-400 uppercase">Pending</p><p className={`text-lg font-bold ${pending > 0 ? 'text-red-600' : 'text-slate-500'}`}>{formatCurrency(pending)}</p></div>
+            </div>
           </div>
-        )}
-      </SectionCard>
 
-      {/* Surgery Details */}
-      <SectionCard icon={Activity} iconColor="text-sky-500" title="Surgery Details"
-        onAdd={() => { resetSurgeryForm(); setShowSurgeryForm(true); }} addLabel="Add Surgery"
-        extraButton={<button onClick={() => setShowTypeManager(true)} className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700 font-medium"><Settings className="w-4 h-4" /> Manage Types</button>}>
-        {surgeries.length === 0 ? (
-          <p className="text-sm text-slate-400 py-4 text-center">No surgery records yet.</p>
-        ) : (
-          <div className="space-y-3">
-            {surgeries.map((s) => (
-              <div key={s.id} className="border border-slate-100 rounded-lg p-4 group">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-sm font-medium text-slate-700">{s.procedure_name || 'Untitled procedure'}</span>
-                  {s.surgery_type && <span className="text-xs font-medium bg-sky-50 text-sky-600 px-2 py-0.5 rounded">{s.surgery_type}</span>}
-                  <span className={`text-xs font-medium px-2 py-0.5 rounded ${s.role === 'assisted_by_me' ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'}`}>{s.role === 'assisted_by_me' ? 'Assisted' : 'Done by me'}</span>
-                  <div className="ml-auto flex items-center gap-1">
-                    <button onClick={() => openEditSurgery(s)} className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-sky-500 transition p-1"><Pencil className="w-3.5 h-3.5" /></button>
-                    <button onClick={() => handleDeleteSurgery(s.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition p-1"><Trash2 className="w-3.5 h-3.5" /></button>
+          <SectionCard icon={HeartPulse} iconColor="text-rose-500" title="Vitals" onAdd={() => { resetVitalsForm(); setShowVitalsForm(true); }} addLabel="Add Reading">
+            {vitals.length === 0 ? (
+              <p className="text-sm text-slate-400 py-4 text-center">No vitals recorded yet (optional).</p>
+            ) : (
+              <div className="space-y-2">
+                {vitals.map((v) => (
+                  <div key={v.id} className="flex items-center justify-between border border-slate-100 rounded-lg p-3 group">
+                    <div className="flex-1">
+                      <p className="text-xs text-slate-400">{formatDate(v.recorded_at)}</p>
+                      <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1 text-sm text-slate-600">
+                        {(v.bp_systolic || v.bp_diastolic) && <span>BP: {v.bp_systolic ?? '—'}/{v.bp_diastolic ?? '—'}</span>}
+                        {v.pulse != null && <span>Pulse: {v.pulse}/min</span>}
+                        {v.temperature != null && <span>Temp: {v.temperature}°F</span>}
+                        {v.spo2 != null && <span>SpO2: {v.spo2}%</span>}
+                        {v.respiratory_rate != null && <span>RR: {v.respiratory_rate}/min</span>}
+                      </div>
+                      {v.notes && <p className="text-xs text-slate-500 mt-1">{v.notes}</p>}
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => openEditVitals(v)} className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-sky-500 transition p-1"><Pencil className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => handleDeleteVitals(v.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition p-1"><Trash2 className="w-3.5 h-3.5" /></button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </SectionCard>
+        </div>
+      )}
+
+      {activeTab === 'investigations' && (
+        <SectionCard icon={TestTube} iconColor="text-teal-500" title="Investigations" onAdd={() => { resetInvestigationForm(); setShowInvestigationForm(true); }} addLabel="Add Investigation">
+          {investigations.length === 0 ? (
+            <p className="text-sm text-slate-400 py-4 text-center">No investigations recorded yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {investigations.map((inv) => (
+                <div key={inv.id} className="flex items-center justify-between border border-slate-100 rounded-lg p-3 group">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-slate-700">{inv.investigation_name}</span>
+                      {inv.investigation_date && <span className="text-xs text-slate-400">{formatDate(inv.investigation_date)}</span>}
+                    </div>
+                    {inv.value && <p className="text-sm text-teal-600 font-medium mt-0.5">Value: {inv.value}</p>}
+                    {inv.notes && <p className="text-xs text-slate-500 mt-0.5">{inv.notes}</p>}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => openEditInvestigation(inv)} className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-sky-500 transition p-1"><Pencil className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => handleDeleteInvestigation(inv.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition p-1"><Trash2 className="w-3.5 h-3.5" /></button>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-2 text-xs text-slate-500">
-                  <div><span className="text-slate-400">Type:</span> {s.surgery_type || '—'}</div>
-                  <div><span className="text-slate-400">Role:</span> {s.role === 'assisted_by_me' ? 'Assisted by me' : 'Done by me'}</div>
-                  <div><span className="text-slate-400">Anaesthesia:</span> {s.anaesthesia_type || '—'}</div>
-                  <div><span className="text-slate-400">Date:</span> {formatDate(s.surgery_date)}</div>
+              ))}
+            </div>
+          )}
+        </SectionCard>
+      )}
+
+      {activeTab === 'surgery' && (
+        <SectionCard icon={Activity} iconColor="text-sky-500" title="Surgery Details"
+          onAdd={() => { resetSurgeryForm(); setShowSurgeryForm(true); }} addLabel="Add Surgery"
+          extraButton={<button onClick={() => setShowTypeManager(true)} className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700 font-medium"><Settings className="w-4 h-4" /> Manage Types</button>}>
+          {surgeries.length === 0 ? (
+            <p className="text-sm text-slate-400 py-4 text-center">No surgery records yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {surgeries.map((s) => (
+                <div key={s.id} className="border border-slate-100 rounded-lg p-4 group">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-sm font-medium text-slate-700">{s.procedure_name || 'Untitled procedure'}</span>
+                    {s.surgery_type && <span className="text-xs font-medium bg-sky-50 text-sky-600 px-2 py-0.5 rounded">{s.surgery_type}</span>}
+                    <span className={`text-xs font-medium px-2 py-0.5 rounded ${s.role === 'assisted_by_me' ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'}`}>{s.role === 'assisted_by_me' ? 'Assisted' : 'Done by me'}</span>
+                    <div className="ml-auto flex items-center gap-1">
+                      <button onClick={() => openEditSurgery(s)} className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-sky-500 transition p-1"><Pencil className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => handleDeleteSurgery(s.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition p-1"><Trash2 className="w-3.5 h-3.5" /></button>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs text-slate-500">
+                    <div><span className="text-slate-400">Type:</span> {s.surgery_type || '—'}</div>
+                    <div><span className="text-slate-400">Role:</span> {s.role === 'assisted_by_me' ? 'Assisted by me' : 'Done by me'}</div>
+                    <div><span className="text-slate-400">Anaesthesia:</span> {s.anaesthesia_type || '—'}</div>
+                    <div><span className="text-slate-400">Date:</span> {formatDate(s.surgery_date)}</div>
+                  </div>
+                  {s.procedure_notes && <p className="text-sm text-slate-600 mt-2 whitespace-pre-wrap">{s.procedure_notes}</p>}
+                  {s.image_paths && s.image_paths.length > 0 && (
+                    <div className="mt-3">
+                      <p className="text-xs text-slate-400 mb-1.5">Surgery Images</p>
+                      <div className="flex gap-2 flex-wrap">
+                        {s.image_paths.map((path, i) => imageUrls[path] ? (
+                          <a key={i} href={imageUrls[path]} target="_blank" rel="noopener noreferrer">
+                            <img src={imageUrls[path]} alt={`Surgery ${i + 1}`} className="w-20 h-20 object-cover rounded-lg border border-slate-200 hover:opacity-80 transition" />
+                          </a>
+                        ) : null)}
+                      </div>
+                    </div>
+                  )}
+                  {s.consent_image_paths && s.consent_image_paths.length > 0 && (
+                    <div className="mt-2">
+                      <p className="text-xs text-slate-400 mb-1.5">Patient Consent Page</p>
+                      <div className="flex gap-2 flex-wrap">
+                        {s.consent_image_paths.map((path, i) => imageUrls[path] ? (
+                          <a key={i} href={imageUrls[path]} target="_blank" rel="noopener noreferrer">
+                            <img src={imageUrls[path]} alt={`Consent ${i + 1}`} className="w-20 h-20 object-cover rounded-lg border border-emerald-200 hover:opacity-80 transition" />
+                          </a>
+                        ) : null)}
+                      </div>
+                    </div>
+                  )}
                 </div>
-                {s.procedure_notes && <p className="text-sm text-slate-600 mt-2 whitespace-pre-wrap">{s.procedure_notes}</p>}
-                {s.image_paths && s.image_paths.length > 0 && (
-                  <div className="mt-3">
-                    <p className="text-xs text-slate-400 mb-1.5">Surgery Images</p>
-                    <div className="flex gap-2 flex-wrap">
-                      {s.image_paths.map((path, i) => imageUrls[path] ? (
+              ))}
+            </div>
+          )}
+        </SectionCard>
+      )}
+
+      {activeTab === 'discharge' && (
+        <div className="bg-white rounded-xl border border-slate-200 p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <ClipboardCheck className="w-4 h-4 text-emerald-500" />
+              <h2 className="font-semibold text-slate-700">Discharge Summary</h2>
+            </div>
+            <button onClick={() => onEdit(patient)} className="flex items-center gap-1.5 text-sm font-medium text-emerald-600 hover:text-emerald-700">
+              <Pencil className="w-4 h-4" /> Edit
+            </button>
+          </div>
+          {patient.patient_type !== 'ip' ? (
+            <p className="text-sm text-slate-400 py-4 text-center">Discharge summary applies to IP patients.</p>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                <div><p className="text-xs text-slate-400 uppercase">Admission</p><p className="text-sm font-medium text-slate-700 mt-1">{formatDate(patient.admission_date)}</p></div>
+                <div><p className="text-xs text-slate-400 uppercase">Discharge</p><p className="text-sm font-medium text-slate-700 mt-1">{formatDate(patient.discharge_date)}</p></div>
+                <div><p className="text-xs text-slate-400 uppercase">Treatment Type</p><p className="text-sm font-medium text-slate-700 mt-1 capitalize">{patient.treatment_type?.replace('_', '-') || '—'}</p></div>
+              </div>
+              {patient.discharge_advice && (
+                <div className="pt-4 border-t border-slate-100">
+                  <p className="text-xs text-slate-400 uppercase mb-1">Discharge Advice</p>
+                  <p className="text-sm text-slate-600 whitespace-pre-wrap">{patient.discharge_advice}</p>
+                </div>
+              )}
+              <div className="pt-4 border-t border-slate-100">
+                <p className="text-xs text-slate-400 uppercase mb-2">Prescription</p>
+                <PrescriptionTable value={patient.prescription_items} onChange={() => { /* read-only here; edit via the Edit button above */ }} />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'followups' && (
+        <SectionCard icon={FlaskConical} iconColor="text-violet-500" title="Follow-up / Pathology" onAdd={() => { resetFollowUpForm(); setShowFollowUpForm(true); }} addLabel="Add Follow-up">
+          {followUps.length === 0 ? (
+            <p className="text-sm text-slate-400 py-4 text-center">No follow-up records yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {followUps.map((f) => (
+                <div key={f.id} className="border border-slate-100 rounded-lg p-4 group">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className={`text-xs font-medium px-2 py-0.5 rounded uppercase ${f.type === 'fnac' ? 'bg-violet-100 text-violet-700' : 'bg-teal-100 text-teal-700'}`}>{f.type || 'N/A'}</span>
+                    {f.report_number && <span className="text-sm font-medium text-slate-700">{f.report_number}</span>}
+                    <div className="ml-auto flex items-center gap-1">
+                      <button onClick={() => openEditFollowUp(f)} className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-sky-500 transition p-1"><Pencil className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => handleDeleteFollowUp(f.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition p-1"><Trash2 className="w-3.5 h-3.5" /></button>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs text-slate-500">
+                    <div><span className="text-slate-400">Lab:</span> {f.lab || '—'}</div>
+                    <div><span className="text-slate-400">Year:</span> {f.year || '—'}</div>
+                  </div>
+                  {f.findings && <p className="text-sm text-slate-600 mt-2 whitespace-pre-wrap">{f.findings}</p>}
+                  {f.report_image_paths && f.report_image_paths.length > 0 && (
+                    <div className="flex gap-2 mt-3 flex-wrap">
+                      {f.report_image_paths.map((path, i) => imageUrls[path] ? (
                         <a key={i} href={imageUrls[path]} target="_blank" rel="noopener noreferrer">
-                          <img src={imageUrls[path]} alt={`Surgery ${i + 1}`} className="w-20 h-20 object-cover rounded-lg border border-slate-200 hover:opacity-80 transition" />
+                          <img src={imageUrls[path]} alt={`Report ${i + 1}`} className="w-20 h-20 object-cover rounded-lg border border-slate-200 hover:opacity-80 transition" />
                         </a>
                       ) : null)}
                     </div>
-                  </div>
-                )}
-                {s.consent_image_paths && s.consent_image_paths.length > 0 && (
-                  <div className="mt-2">
-                    <p className="text-xs text-slate-400 mb-1.5">Patient Consent Page</p>
-                    <div className="flex gap-2 flex-wrap">
-                      {s.consent_image_paths.map((path, i) => imageUrls[path] ? (
-                        <a key={i} href={imageUrls[path]} target="_blank" rel="noopener noreferrer">
-                          <img src={imageUrls[path]} alt={`Consent ${i + 1}`} className="w-20 h-20 object-cover rounded-lg border border-emerald-200 hover:opacity-80 transition" />
-                        </a>
-                      ) : null)}
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </SectionCard>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </SectionCard>
+      )}
 
-      {/* Follow-ups */}
-      <SectionCard icon={FlaskConical} iconColor="text-violet-500" title="Follow-up / Pathology" onAdd={() => { resetFollowUpForm(); setShowFollowUpForm(true); }} addLabel="Add Follow-up">
-        {followUps.length === 0 ? (
-          <p className="text-sm text-slate-400 py-4 text-center">No follow-up records yet.</p>
-        ) : (
-          <div className="space-y-3">
-            {followUps.map((f) => (
-              <div key={f.id} className="border border-slate-100 rounded-lg p-4 group">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className={`text-xs font-medium px-2 py-0.5 rounded uppercase ${f.type === 'fnac' ? 'bg-violet-100 text-violet-700' : 'bg-teal-100 text-teal-700'}`}>{f.type || 'N/A'}</span>
-                  {f.report_number && <span className="text-sm font-medium text-slate-700">{f.report_number}</span>}
-                  <div className="ml-auto flex items-center gap-1">
-                    <button onClick={() => openEditFollowUp(f)} className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-sky-500 transition p-1"><Pencil className="w-3.5 h-3.5" /></button>
-                    <button onClick={() => handleDeleteFollowUp(f.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition p-1"><Trash2 className="w-3.5 h-3.5" /></button>
+      {activeTab === 'payments' && (
+        <SectionCard icon={IndianRupee} iconColor="text-emerald-500" title="Payment History" onAdd={() => { resetPaymentForm(); setShowPaymentForm(true); }} addLabel="Add Payment">
+          {payments.length === 0 ? (
+            <p className="text-sm text-slate-400 py-4 text-center">No payments recorded yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {payments.map((p) => (
+                <div key={p.id} className="flex items-center justify-between border border-slate-100 rounded-lg p-3 group">
+                  <div>
+                    <span className="text-sm font-medium text-emerald-600">{formatCurrency(p.amount)}</span>
+                    <span className="text-xs text-slate-400 ml-2">{formatDate(p.payment_date)}</span>
+                    {p.notes && <p className="text-xs text-slate-500 mt-1">{p.notes}</p>}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => openEditPayment(p)} className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-sky-500 transition p-1"><Pencil className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => handleDeletePayment(p.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition p-1"><Trash2 className="w-3.5 h-3.5" /></button>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-2 text-xs text-slate-500">
-                  <div><span className="text-slate-400">Lab:</span> {f.lab || '—'}</div>
-                  <div><span className="text-slate-400">Year:</span> {f.year || '—'}</div>
-                </div>
-                {f.findings && <p className="text-sm text-slate-600 mt-2 whitespace-pre-wrap">{f.findings}</p>}
-                {f.report_image_paths && f.report_image_paths.length > 0 && (
-                  <div className="flex gap-2 mt-3 flex-wrap">
-                    {f.report_image_paths.map((path, i) => imageUrls[path] ? (
-                      <a key={i} href={imageUrls[path]} target="_blank" rel="noopener noreferrer">
-                        <img src={imageUrls[path]} alt={`Report ${i + 1}`} className="w-20 h-20 object-cover rounded-lg border border-slate-200 hover:opacity-80 transition" />
-                      </a>
-                    ) : null)}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </SectionCard>
-
-      {/* Payments */}
-      <SectionCard icon={IndianRupee} iconColor="text-emerald-500" title="Payment History" onAdd={() => { resetPaymentForm(); setShowPaymentForm(true); }} addLabel="Add Payment">
-        {payments.length === 0 ? (
-          <p className="text-sm text-slate-400 py-4 text-center">No payments recorded yet.</p>
-        ) : (
-          <div className="space-y-2">
-            {payments.map((p) => (
-              <div key={p.id} className="flex items-center justify-between border border-slate-100 rounded-lg p-3 group">
-                <div>
-                  <span className="text-sm font-medium text-emerald-600">{formatCurrency(p.amount)}</span>
-                  <span className="text-xs text-slate-400 ml-2">{formatDate(p.payment_date)}</span>
-                  {p.notes && <p className="text-xs text-slate-500 mt-1">{p.notes}</p>}
-                </div>
-                <div className="flex items-center gap-1">
-                  <button onClick={() => openEditPayment(p)} className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-sky-500 transition p-1"><Pencil className="w-3.5 h-3.5" /></button>
-                  <button onClick={() => handleDeletePayment(p.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition p-1"><Trash2 className="w-3.5 h-3.5" /></button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </SectionCard>
+              ))}
+            </div>
+          )}
+        </SectionCard>
+      )}
 
       {/* Surgery Form Modal */}
       {showSurgeryForm && (
@@ -742,6 +906,60 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
           </form>
         </Modal>
       )}
+
+      {/* Vitals Form Modal */}
+      {showVitalsForm && (
+        <Modal title={editingVitalsId ? 'Edit Vitals Reading' : 'Add Vitals Reading'} onClose={() => { setShowVitalsForm(false); resetVitalsForm(); }}>
+          <form onSubmit={handleSaveVitals} className="space-y-4">
+            <div>
+              <label htmlFor="pd-v-date" className="block text-sm font-medium text-slate-600 mb-1.5">Date *</label>
+              <input id="pd-v-date" name="vDate" type="date" required value={vDate} onChange={(e) => setVDate(e.target.value)} className="form-input" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="pd-v-bp-sys" className="block text-sm font-medium text-slate-600 mb-1.5">BP Systolic</label>
+                <input id="pd-v-bp-sys" name="vBpSys" type="number" value={vBpSys} onChange={(e) => setVBpSys(e.target.value)} className="form-input" placeholder="e.g. 120" />
+              </div>
+              <div>
+                <label htmlFor="pd-v-bp-dia" className="block text-sm font-medium text-slate-600 mb-1.5">BP Diastolic</label>
+                <input id="pd-v-bp-dia" name="vBpDia" type="number" value={vBpDia} onChange={(e) => setVBpDia(e.target.value)} className="form-input" placeholder="e.g. 80" />
+              </div>
+              <div>
+                <label htmlFor="pd-v-pulse" className="block text-sm font-medium text-slate-600 mb-1.5">Pulse (/min)</label>
+                <input id="pd-v-pulse" name="vPulse" type="number" value={vPulse} onChange={(e) => setVPulse(e.target.value)} className="form-input" />
+              </div>
+              <div>
+                <label htmlFor="pd-v-temp" className="block text-sm font-medium text-slate-600 mb-1.5">Temperature (°F)</label>
+                <input id="pd-v-temp" name="vTemp" type="number" step="0.1" value={vTemp} onChange={(e) => setVTemp(e.target.value)} className="form-input" />
+              </div>
+              <div>
+                <label htmlFor="pd-v-spo2" className="block text-sm font-medium text-slate-600 mb-1.5">SpO2 (%)</label>
+                <input id="pd-v-spo2" name="vSpo2" type="number" value={vSpo2} onChange={(e) => setVSpo2(e.target.value)} className="form-input" />
+              </div>
+              <div>
+                <label htmlFor="pd-v-rr" className="block text-sm font-medium text-slate-600 mb-1.5">Respiratory Rate (/min)</label>
+                <input id="pd-v-rr" name="vRR" type="number" value={vRR} onChange={(e) => setVRR(e.target.value)} className="form-input" />
+              </div>
+            </div>
+            <div>
+              <label htmlFor="pd-v-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
+              <input id="pd-v-notes" name="vNotes" type="text" value={vNotes} onChange={(e) => setVNotes(e.target.value)} className="form-input" placeholder="Optional notes..." />
+            </div>
+            <p className="text-xs text-slate-400">All fields optional — record only what you've measured.</p>
+            <button type="submit" className="w-full py-2.5 bg-rose-600 text-white rounded-lg font-medium hover:bg-rose-700 transition">
+              {editingVitalsId ? 'Update Vitals' : 'Save Vitals'}
+            </button>
+          </form>
+        </Modal>
+      )}
+
+      {newAttendanceId && (
+        <PresentDutyPrompt
+          attendanceId={newAttendanceId}
+          hospitalName={patient.hospital?.name}
+          onClose={() => setNewAttendanceId(null)}
+        />
+      )}
     </div>
   );
 }
@@ -754,6 +972,7 @@ function SectionCard({ icon: Icon, iconColor, title, onAdd, addLabel, extraButto
     : iconColor.includes('violet') ? 'text-violet-600 hover:text-violet-700'
     : iconColor.includes('emerald') ? 'text-emerald-600 hover:text-emerald-700'
     : iconColor.includes('teal') ? 'text-teal-600 hover:text-teal-700'
+    : iconColor.includes('rose') ? 'text-rose-600 hover:text-rose-700'
     : 'text-slate-600 hover:text-slate-700';
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-5">

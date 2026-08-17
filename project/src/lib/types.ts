@@ -143,6 +143,21 @@ export interface Investigation {
   created_at: string;
 }
 
+export interface Vitals {
+  id: string;
+  user_id: string;
+  patient_id: string;
+  recorded_at: string;
+  bp_systolic: number | null;
+  bp_diastolic: number | null;
+  pulse: number | null;
+  temperature: number | null;
+  spo2: number | null;
+  respiratory_rate: number | null;
+  notes: string;
+  created_at: string;
+}
+
 export interface HospitalRevenue {
   hospital: Hospital;
   totalFees: number;

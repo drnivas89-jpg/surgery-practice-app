@@ -180,7 +180,7 @@ export default function PatientRegistrationWizard({ hospitals, defaultHospitalId
         diagnosis: diagnosis || null,
         patient_type: patientType,
         prescription: (patientType === 'op' || patientType === 'opinion') ? prescription : treatmentType === 'non_surgical' ? treatmentDetails : '',
-        prescription_items: patientType === 'ip' ? prescriptionItems : DEFAULT_PRESCRIPTION,
+        prescription_items: prescriptionItems,
         treatment_type: patientType === 'ip' ? treatmentType : null,
         admission_date: patientType === 'ip' ? (admissionDate || null) : null,
         surgery_date: treatmentType === 'surgical' ? (surgeryDate || null) : null,
@@ -364,8 +364,12 @@ export default function PatientRegistrationWizard({ hospitals, defaultHospitalId
         {currentStep === 'op_details' && (
           <>
             <div>
-              <label htmlFor="w-prescription" className="block text-sm font-medium text-slate-600 mb-1.5">Prescription</label>
-              <textarea id="w-prescription" name="prescription" value={prescription} onChange={(e) => setPrescription(e.target.value)} rows={4} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition resize-none" placeholder="Prescription notes..." autoFocus />
+              <label htmlFor="w-prescription" className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
+              <textarea id="w-prescription" name="prescription" value={prescription} onChange={(e) => setPrescription(e.target.value)} rows={3} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition resize-none" placeholder="Prescription notes..." autoFocus />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-600 mb-1.5">Prescription</label>
+              <PrescriptionTable value={prescriptionItems} onChange={setPrescriptionItems} />
             </div>
             <FollowUpFields
               followUpNeeded={followUpNeeded}

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import { Patient, Hospital, Surgery, ClassEntry, Publication } from '@/lib/types';
+import { Patient, Hospital, Surgery, ClassEntry, Publication, Investigation } from '@/lib/types';
 import { formatDate, getImageUrl } from '@/lib/helpers';
-import { Activity, Download, Filter, X, FileText, GraduationCap, BookOpen } from 'lucide-react';
+import { Activity, Download, Filter, X, GraduationCap, BookOpen } from 'lucide-react';
 import jsPDF from 'jspdf';
 
 const MONTHS = [
@@ -11,15 +11,78 @@ const MONTHS = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
+const SURGERY_CATEGORIES = ['Major', 'Minor', 'Bedside', 'Endoscopy', 'Others'] as const;
+function categorize(surgeryType: string | null | undefined): typeof SURGERY_CATEGORIES[number] {
+  const t = (surgeryType || '').trim().toLowerCase();
+  const match = SURGERY_CATEGORIES.find((c) => c.toLowerCase() === t);
+  return match || 'Others';
+}
+
+// Clinical palette used throughout the exported PDF.
+const NAVY: [number, number, number] = [30, 41, 59];      // #1E293B
+const TEAL: [number, number, number] = [13, 148, 136];     // #0D9488
+const BORDER: [number, number, number] = [226, 232, 240];  // #E2E8F0
+const MUTED: [number, number, number] = [100, 116, 139];   // slate-500, for secondary text
+
 interface LogbookRow {
   surgery: Surgery;
   patient: Patient | null;
   hospital: Hospital | null;
 }
 
+interface LoadedImage {
+  dataUrl: string;
+  format: 'JPEG' | 'PNG';
+  width: number;
+  height: number;
+}
+
+// Fetches a (signed) image URL and converts it to a data URL jsPDF can
+// embed directly, along with its natural dimensions for aspect-correct
+// placement. Returns null on any failure so a broken image just gets
+// skipped rather than aborting the whole export.
+async function loadImageForPdf(url: string): Promise<LoadedImage | null> {
+  try {
+    const res = await fetch(url);
+    const blob = await res.blob();
+    const format: 'JPEG' | 'PNG' = blob.type.includes('png') ? 'PNG' : 'JPEG';
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+    const { width, height } = await new Promise<{ width: number; height: number }>((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve({ width: img.naturalWidth || 1, height: img.naturalHeight || 1 });
+      img.onerror = () => resolve({ width: 1, height: 1 });
+      img.src = dataUrl;
+    });
+    return { dataUrl, format, width, height };
+  } catch {
+    return null;
+  }
+}
+
+// Simple, original silhouette-style vector graphic (drawn with jsPDF's own
+// shape primitives, not a raster image) so it stays crisp at any size.
+function drawSurgeonIllustration(doc: jsPDF, cx: number, cy: number) {
+  doc.setFillColor(...BORDER);
+  doc.circle(cx, cy, 95, 'F');
+  doc.setFillColor(...NAVY);
+  doc.lines([[40, 0], [15, 55], [-110, 0], [15, -55]], cx - 40, cy + 25, [1, 1], 'F', true);
+  doc.setFillColor(...NAVY);
+  doc.circle(cx, cy - 15, 38, 'F');
+  doc.setFillColor(...TEAL);
+  doc.ellipse(cx, cy - 40, 42, 22, 'F');
+  doc.setFillColor(...TEAL);
+  doc.roundedRect(cx - 27, cy - 8, 54, 28, 9, 9, 'F');
+}
+
 export default function SurgicalLogbook() {
   const { user } = useAuth();
   const [rows, setRows] = useState<LogbookRow[]>([]);
+  const [investigationsByPatient, setInvestigationsByPatient] = useState<Map<string, Investigation[]>>(new Map());
   const [classes, setClasses] = useState<ClassEntry[]>([]);
   const [publications, setPublications] = useState<Publication[]>([]);
   const [includeClasses, setIncludeClasses] = useState(false);
@@ -32,17 +95,21 @@ export default function SurgicalLogbook() {
   const [hospitalFilter, setHospitalFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
 
+  const [doctorName, setDoctorName] = useState('');
+  const [qualifications, setQualifications] = useState('');
+
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!user) return;
     (async () => {
-      const [{ data: surgeries }, { data: patients }, { data: hospitals }, { data: cls }, { data: pubs }] = await Promise.all([
+      const [{ data: surgeries }, { data: patients }, { data: hospitals }, { data: cls }, { data: pubs }, { data: invs }] = await Promise.all([
         supabase.from('surgeries').select('*').order('surgery_date', { ascending: false, nullsFirst: false }),
         supabase.from('patients').select('*, hospital:hospitals(*)'),
         supabase.from('hospitals').select('*').order('name'),
         supabase.from('classes').select('*, hospital:hospitals(*)').order('class_date', { ascending: false }),
         supabase.from('publications').select('*').order('year', { ascending: false }),
+        supabase.from('investigations').select('*'),
       ]);
       const patientMap = new Map<string, Patient>();
       (patients || []).forEach((p: Patient) => patientMap.set(p.id, p));
@@ -56,6 +123,14 @@ export default function SurgicalLogbook() {
       setRows(built);
       setClasses(cls || []);
       setPublications(pubs || []);
+
+      const invByPatient = new Map<string, Investigation[]>();
+      (invs || []).forEach((inv: Investigation) => {
+        const list = invByPatient.get(inv.patient_id) || [];
+        list.push(inv);
+        invByPatient.set(inv.patient_id, list);
+      });
+      setInvestigationsByPatient(invByPatient);
       setLoading(false);
 
       const allPaths = (surgeries || []).flatMap((s: Surgery) => [
@@ -116,263 +191,352 @@ export default function SurgicalLogbook() {
     setMonthFilter(''); setYearFilter(''); setHospitalFilter(''); setTypeFilter('');
   };
 
-  const handleExportPdf = () => {
+  const handleExportPdf = async () => {
     setExporting(true);
-    const doc = new jsPDF({ unit: 'pt' });
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
-    const margin = 40;
-    const maxWidth = pageWidth - margin * 2;
-    let y = margin;
-    let page = 1;
+    try {
+      const doc = new jsPDF({ unit: 'pt' });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const margin = 40;
+      const maxWidth = pageWidth - margin * 2;
+      let y = margin;
+      let page = 1;
 
-    const addPageNumber = () => {
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(8);
-      doc.setTextColor(160, 160, 160);
-      doc.text(`Page ${page}`, pageWidth / 2, pageHeight - 20, { align: 'center' });
-      doc.setTextColor(40, 40, 40);
-    };
+      const addPageNumber = () => {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8);
+        doc.setTextColor(...MUTED);
+        doc.text(`Page ${page}`, pageWidth / 2, pageHeight - 20, { align: 'center' });
+      };
+      const newPage = () => { addPageNumber(); doc.addPage(); page++; y = margin; };
 
-    // ---- Cover Page ----
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(28);
-    doc.setTextColor(20, 20, 40);
-    doc.text('Surgical Logbook', pageWidth / 2, pageHeight / 2 - 40, { align: 'center' });
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(12);
-    doc.setTextColor(100, 100, 100);
-    doc.text(`Generated: ${new Date().toLocaleString('en-GB')}`, pageWidth / 2, pageHeight / 2, { align: 'center' });
-    doc.text(`Total Records: ${filtered.length}`, pageWidth / 2, pageHeight / 2 + 20, { align: 'center' });
-    if (activeFilters.length > 0) {
-      doc.setFontSize(10);
-      const filterText = activeFilters.join('  |  ');
-      const wrappedFilters = doc.splitTextToSize(`Filters: ${filterText}`, maxWidth) as string[];
-      let fy = pageHeight / 2 + 50;
-      for (const w of wrappedFilters) {
-        doc.text(w, pageWidth / 2, fy, { align: 'center' });
-        fy += 14;
+      // ---- Pre-fetch every image needed as an embeddable data URL ----
+      const neededPaths = new Set<string>();
+      filtered.forEach((r) => {
+        (r.surgery.image_paths || []).forEach((p) => neededPaths.add(p));
+        (r.surgery.consent_image_paths || []).forEach((p) => neededPaths.add(p));
+      });
+      const imageDataMap = new Map<string, LoadedImage>();
+      for (const path of neededPaths) {
+        const url = imageUrls[path];
+        if (!url) continue;
+        const loaded = await loadImageForPdf(url);
+        if (loaded) imageDataMap.set(path, loaded);
       }
-    }
-    addPageNumber();
-    doc.addPage();
-    page++;
-    y = margin;
 
-    // ---- Table of Contents ----
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(16);
-    doc.setTextColor(40, 40, 40);
-    doc.text('Table of Contents', margin, y);
-    y += 24;
+      // ---- Cover Page ----
+      doc.setFillColor(255, 255, 255);
+      doc.rect(0, 0, pageWidth, pageHeight, 'F');
+      doc.setDrawColor(...BORDER);
+      doc.setLineWidth(1);
+      doc.rect(24, 24, pageWidth - 48, pageHeight - 48);
 
-    // Group by date
-    const byDate = new Map<string, LogbookRow[]>();
-    for (const r of filtered) {
-      const key = r.surgery.surgery_date ? r.surgery.surgery_date.substring(0, 10) : 'No Date';
-      if (!byDate.has(key)) byDate.set(key, []);
-      byDate.get(key)!.push(r);
-    }
-    const sortedDates = Array.from(byDate.keys()).sort((a, b) => a.localeCompare(b));
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(10);
-    doc.setTextColor(70, 70, 70);
-    for (const d of sortedDates) {
-      if (y > pageHeight - margin) {
-        addPageNumber();
-        doc.addPage();
-        page++;
-        y = margin;
-      }
-      const label = d === 'No Date' ? 'Undated' : formatDate(d);
-      const count = byDate.get(d)!.length;
-      doc.text(`${label}  —  ${count} case${count > 1 ? 's' : ''}`, margin, y);
-      y += 16;
-    }
-    addPageNumber();
-    doc.addPage();
-    page++;
-    y = margin;
-
-    // ---- Date-wise Case Details ----
-    for (const d of sortedDates) {
-      // Date heading
-      if (y + 30 > pageHeight - margin) {
-        addPageNumber();
-        doc.addPage();
-        page++;
-        y = margin;
-      }
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(14);
-      doc.setTextColor(30, 60, 120);
-      doc.text(d === 'No Date' ? 'Undated Cases' : formatDate(d), margin, y);
-      y += 20;
-      doc.setDrawColor(180, 200, 230);
-      doc.line(margin, y, pageWidth - margin, y);
-      y += 16;
+      doc.setFontSize(34);
+      doc.setTextColor(...NAVY);
+      doc.text('LOGBOOK', pageWidth / 2, pageHeight * 0.22, { align: 'center' });
 
-      const rowsForDate = byDate.get(d)!;
-      rowsForDate.forEach((r, idx) => {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(13);
+      doc.setTextColor(...NAVY);
+      const nameLine = [doctorName.trim(), qualifications.trim()].filter(Boolean).join(', ');
+      if (nameLine) doc.text(nameLine, pageWidth / 2, pageHeight * 0.22 + 34, { align: 'center' });
+
+      const datedFiltered = filtered.filter((r) => r.surgery.surgery_date).map((r) => r.surgery.surgery_date!.substring(0, 10)).sort();
+      const rangeText = datedFiltered.length > 0
+        ? `From ${formatDate(datedFiltered[0])} to ${formatDate(datedFiltered[datedFiltered.length - 1])}`
+        : '';
+      if (rangeText) {
+        doc.setFontSize(11);
+        doc.setTextColor(...TEAL);
+        doc.text(rangeText, pageWidth / 2, pageHeight * 0.22 + 54, { align: 'center' });
+      }
+
+      drawSurgeonIllustration(doc, pageWidth / 2, pageHeight * 0.62);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(...MUTED);
+      doc.text(`Generated ${new Date().toLocaleDateString('en-GB')} · ${filtered.length} case${filtered.length !== 1 ? 's' : ''}`, pageWidth / 2, pageHeight - 50, { align: 'center' });
+
+      addPageNumber();
+      doc.addPage();
+      page++;
+      y = margin;
+
+      // ---- Table of Contents ----
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.setTextColor(...NAVY);
+      doc.text('Table of Contents', margin, y);
+      y += 10;
+      doc.setDrawColor(...BORDER);
+      doc.line(margin, y, pageWidth - margin, y);
+      y += 22;
+
+      const byDate = new Map<string, LogbookRow[]>();
+      for (const r of filtered) {
+        const key = r.surgery.surgery_date ? r.surgery.surgery_date.substring(0, 10) : 'No Date';
+        if (!byDate.has(key)) byDate.set(key, []);
+        byDate.get(key)!.push(r);
+      }
+      const sortedDates = Array.from(byDate.keys()).sort((a, b) => a.localeCompare(b));
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10);
+      doc.setTextColor(...MUTED);
+      for (const d of sortedDates) {
+        if (y > pageHeight - margin) newPage();
+        const label = d === 'No Date' ? 'Undated' : formatDate(d);
+        const count = byDate.get(d)!.length;
+        doc.text(`${label}`, margin, y);
+        doc.text(`${count} case${count > 1 ? 's' : ''}`, pageWidth - margin, y, { align: 'right' });
+        y += 16;
+      }
+      newPage();
+
+      // ---- Case Pages ----
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.setTextColor(...NAVY);
+      doc.text('Case Details', margin, y);
+      y += 10;
+      doc.setDrawColor(...BORDER);
+      doc.line(margin, y, pageWidth - margin, y);
+      y += 26;
+
+      const sortedRows = [...filtered].sort((a, b) => (a.surgery.surgery_date || '').localeCompare(b.surgery.surgery_date || ''));
+      let compactOnPage = 0;
+
+      const drawImageGrid = (paths: string[], label: string, thumbSize: number, perRow: number) => {
+        const withData = paths.map((p) => imageDataMap.get(p)).filter((d): d is LoadedImage => !!d);
+        if (withData.length === 0) return;
+        if (y + 16 > pageHeight - margin) newPage();
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(9);
+        doc.setTextColor(...TEAL);
+        doc.text(label, margin, y);
+        y += 12;
+        let col = 0;
+        for (const img of withData) {
+          if (col === perRow) { col = 0; y += thumbSize + 8; }
+          if (y + thumbSize > pageHeight - margin) { newPage(); col = 0; }
+          const x = margin + col * (thumbSize + 8);
+          const ratio = img.width / img.height;
+          let drawW = thumbSize, drawH = thumbSize;
+          if (ratio > 1) drawH = thumbSize / ratio; else drawW = thumbSize * ratio;
+          doc.setDrawColor(...BORDER);
+          doc.rect(x, y, thumbSize, thumbSize);
+          doc.addImage(img.dataUrl, img.format, x + (thumbSize - drawW) / 2, y + (thumbSize - drawH) / 2, drawW, drawH);
+          col++;
+        }
+        y += thumbSize + 14;
+      };
+
+      const drawCaseHeader = (r: LogbookRow, big: boolean) => {
         const p = r.patient;
-        const nameStr = p?.patient_name || 'Unknown';
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(big ? 15 : 12);
+        doc.setTextColor(...NAVY);
+        doc.text(p?.patient_name || 'Unknown patient', margin, y);
+        const category = categorize(r.surgery.surgery_type);
+        const badgeText = category;
+        doc.setFontSize(8);
+        doc.setTextColor(255, 255, 255);
+        const badgeW = doc.getTextWidth(badgeText) + 14;
+        doc.setFillColor(...TEAL);
+        doc.roundedRect(pageWidth - margin - badgeW, y - 11, badgeW, 15, 4, 4, 'F');
+        doc.text(badgeText, pageWidth - margin - badgeW / 2, y - 1, { align: 'center' });
+        y += big ? 18 : 14;
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(big ? 9.5 : 8.5);
+        doc.setTextColor(...MUTED);
+        const idStr = p?.unique_id || '—';
         const ageStr = p?.age != null ? `${p.age}y` : '—';
         const sexStr = p?.sex || '—';
-        const idStr = p?.unique_id || '—';
-        const hospStr = r.hospital?.name || '—';
-        const procStr = r.surgery.procedure_name || '—';
-        const typeStr = r.surgery.surgery_type || '—';
-        const roleStr = r.surgery.role === 'assisted_by_me' ? 'Assisted' : 'Done by me';
-        const notesStr = r.surgery.procedure_notes || '';
-        const imgCount = (r.surgery.image_paths?.length || 0) + (r.surgery.consent_image_paths?.length || 0);
+        doc.text(`ID: ${idStr}   Age/Sex: ${ageStr} / ${sexStr}   Hospital: ${r.hospital?.name || '—'}   Date: ${formatDate(r.surgery.surgery_date)}`, margin, y);
+        y += big ? 14 : 11;
+      };
 
-        const blockHeight = 70 + (notesStr ? 24 : 0) + (imgCount > 0 ? 14 : 0);
+      sortedRows.forEach((r, rowIndex) => {
+        const category = categorize(r.surgery.surgery_type);
+        const isMajor = category === 'Major';
+        const isLastRow = rowIndex === sortedRows.length - 1;
 
-        if (y + blockHeight > pageHeight - margin) {
-          addPageNumber();
-          doc.addPage();
-          page++;
-          y = margin;
-        }
+        if (isMajor) {
+          // Every major case starts on its own fresh page and gets a
+          // generous, complete layout — patient details, investigations,
+          // full operative notes, and larger photos.
+          if (y > margin + 5) newPage();
+          drawCaseHeader(r, true);
 
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(11);
-        doc.setTextColor(40, 40, 40);
-        doc.text(`Case ${idx + 1}: ${nameStr}`, margin, y);
-        y += 14;
-
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(9);
-        doc.setTextColor(70, 70, 70);
-        doc.text(`ID: ${idStr}   Age/Sex: ${ageStr} / ${sexStr}   Hospital: ${hospStr}`, margin, y);
-        y += 12;
-        doc.text(`Procedure: ${procStr}   Type: ${typeStr}   Role: ${roleStr}`, margin, y);
-        y += 12;
-
-        if (notesStr) {
-          doc.setTextColor(90, 90, 90);
-          const wrappedNotes = doc.splitTextToSize(`Notes: ${notesStr}`, maxWidth) as string[];
-          for (const w of wrappedNotes) {
-            if (y > pageHeight - margin) {
-              addPageNumber();
-              doc.addPage();
-              page++;
-              y = margin;
-            }
-            doc.text(w, margin, y);
-            y += 11;
+          if (r.patient?.diagnosis) {
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(9.5);
+            doc.setTextColor(...NAVY);
+            doc.text('Diagnosis', margin, y);
+            y += 12;
+            doc.setFont('helvetica', 'normal');
+            doc.setTextColor(...MUTED);
+            const wrapped = doc.splitTextToSize(r.patient.diagnosis, maxWidth) as string[];
+            for (const w of wrapped) { if (y > pageHeight - margin) newPage(); doc.text(w, margin, y); y += 12; }
+            y += 4;
           }
-        }
 
-        if (imgCount > 0) {
-          doc.setTextColor(130, 130, 130);
-          doc.text(`Attachments: ${imgCount} image(s) [${r.surgery.image_paths?.length || 0} surgery, ${r.surgery.consent_image_paths?.length || 0} consent]`, margin, y);
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(9.5);
+          doc.setTextColor(...NAVY);
+          doc.text('Procedure', margin, y);
           y += 12;
-        }
+          doc.setFont('helvetica', 'normal');
+          doc.setTextColor(...MUTED);
+          doc.text(`${r.surgery.procedure_name || '—'}   |   Anaesthesia: ${r.surgery.anaesthesia_type || '—'}   |   Role: ${r.surgery.role === 'assisted_by_me' ? 'Assisted' : 'Done by me'}`, margin, y);
+          y += 18;
 
-        y += 6;
-        doc.setDrawColor(235, 235, 235);
-        doc.line(margin, y, pageWidth - margin, y);
-        y += 14;
+          const patientInvestigations = r.patient ? (investigationsByPatient.get(r.patient.id) || []) : [];
+          if (patientInvestigations.length > 0) {
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(9.5);
+            doc.setTextColor(...NAVY);
+            doc.text('Investigations', margin, y);
+            y += 12;
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(9);
+            doc.setTextColor(...MUTED);
+            for (const inv of patientInvestigations) {
+              if (y > pageHeight - margin) newPage();
+              const line = `${inv.investigation_name}${inv.investigation_date ? ` (${formatDate(inv.investigation_date)})` : ''}: ${inv.value || '—'}`;
+              doc.text(line, margin, y);
+              y += 12;
+            }
+            y += 6;
+          }
+
+          if (r.surgery.procedure_notes) {
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(9.5);
+            doc.setTextColor(...NAVY);
+            doc.text('Operative Notes', margin, y);
+            y += 12;
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(9);
+            doc.setTextColor(...MUTED);
+            const wrapped = doc.splitTextToSize(r.surgery.procedure_notes, maxWidth) as string[];
+            for (const w of wrapped) { if (y > pageHeight - margin) newPage(); doc.text(w, margin, y); y += 12; }
+            y += 6;
+          }
+
+          drawImageGrid(r.surgery.image_paths || [], 'Intra-operative / Specimen Photos', 130, 3);
+          drawImageGrid(r.surgery.consent_image_paths || [], 'Consent Page', 130, 3);
+
+          // Every major case gets its own dedicated page(s) — the next
+          // case (of any kind) always starts fresh, unless this was the
+          // last case (nothing to reserve a blank page for).
+          if (!isLastRow) newPage();
+          compactOnPage = 0;
+        } else {
+          // Minor / Bedside / Endoscopy / Others: compact, up to 2 per page.
+          if (compactOnPage >= 2) newPage();
+          if (compactOnPage === 1) {
+            doc.setDrawColor(...BORDER);
+            doc.line(margin, y, pageWidth - margin, y);
+            y += 16;
+          }
+          drawCaseHeader(r, false);
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(9);
+          doc.setTextColor(...MUTED);
+          doc.text(`${r.surgery.procedure_name || '—'}   |   ${r.surgery.anaesthesia_type || '—'}   |   ${r.surgery.role === 'assisted_by_me' ? 'Assisted' : 'Done by me'}`, margin, y);
+          y += 14;
+          if (r.surgery.procedure_notes) {
+            const wrapped = (doc.splitTextToSize(r.surgery.procedure_notes, maxWidth) as string[]).slice(0, 3);
+            for (const w of wrapped) { doc.text(w, margin, y); y += 11; }
+          }
+          drawImageGrid(r.surgery.image_paths || [], 'Photos', 70, 5);
+          y += 10;
+          compactOnPage++;
+        }
       });
 
-      y += 8;
-    }
+      // ---- Classes (if included) ----
+      if (includeClasses) {
+        newPage();
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(16);
+        doc.setTextColor(...NAVY);
+        doc.text('Classes / Teaching', margin, y);
+        y += 24;
 
-    // ---- Classes (if included) ----
-    if (includeClasses) {
-      addPageNumber();
-      doc.addPage();
-      page++;
-      y = margin;
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(16);
-      doc.setTextColor(40, 40, 40);
-      doc.text('Classes / Teaching', margin, y);
-      y += 24;
-
-      if (classes.length === 0) {
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(10);
-        doc.setTextColor(130, 130, 130);
-        doc.text('No classes logged.', margin, y);
-        y += 16;
-      } else {
-        classes.forEach((c) => {
-          if (y > pageHeight - margin - 60) {
-            addPageNumber();
-            doc.addPage();
-            page++;
-            y = margin;
-          }
-          doc.setFont('helvetica', 'bold');
-          doc.setFontSize(11);
-          doc.setTextColor(20, 20, 40);
-          doc.text(c.topic || 'Untitled class', margin, y);
-          y += 14;
+        if (classes.length === 0) {
           doc.setFont('helvetica', 'normal');
-          doc.setFontSize(9);
-          doc.setTextColor(90, 90, 90);
-          doc.text(`${formatDate(c.class_date)}  |  ${c.class_type || '—'}  |  ${c.hospital?.name || '—'}  |  To: ${c.audience || '—'}`, margin, y);
-          y += 18;
-          doc.setDrawColor(235, 235, 235);
-          doc.line(margin, y, pageWidth - margin, y);
-          y += 14;
-        });
+          doc.setFontSize(10);
+          doc.setTextColor(...MUTED);
+          doc.text('No classes logged.', margin, y);
+          y += 16;
+        } else {
+          classes.forEach((c) => {
+            if (y > pageHeight - margin - 60) newPage();
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(11);
+            doc.setTextColor(...NAVY);
+            doc.text(c.topic || 'Untitled class', margin, y);
+            y += 14;
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(9);
+            doc.setTextColor(...MUTED);
+            doc.text(`${formatDate(c.class_date)}  |  ${c.class_type || '—'}  |  ${c.hospital?.name || '—'}  |  To: ${c.audience || '—'}`, margin, y);
+            y += 18;
+            doc.setDrawColor(...BORDER);
+            doc.line(margin, y, pageWidth - margin, y);
+            y += 14;
+          });
+        }
       }
-    }
 
-    // ---- Publications (if included) ----
-    if (includePublications) {
-      addPageNumber();
-      doc.addPage();
-      page++;
-      y = margin;
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(16);
-      doc.setTextColor(40, 40, 40);
-      doc.text('Publications', margin, y);
-      y += 24;
+      // ---- Publications (if included) ----
+      if (includePublications) {
+        newPage();
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(16);
+        doc.setTextColor(...NAVY);
+        doc.text('Publications', margin, y);
+        y += 24;
 
-      if (publications.length === 0) {
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(10);
-        doc.setTextColor(130, 130, 130);
-        doc.text('No publications logged.', margin, y);
-        y += 16;
-      } else {
-        publications.forEach((p) => {
-          if (y > pageHeight - margin - 60) {
-            addPageNumber();
-            doc.addPage();
-            page++;
-            y = margin;
-          }
-          doc.setFont('helvetica', 'bold');
-          doc.setFontSize(11);
-          doc.setTextColor(20, 20, 40);
-          doc.text(p.topic || 'Untitled', margin, y);
-          y += 14;
+        if (publications.length === 0) {
           doc.setFont('helvetica', 'normal');
-          doc.setFontSize(9);
-          doc.setTextColor(90, 90, 90);
-          const when = `${p.month ? MONTHS[p.month - 1] : ''} ${p.year || ''}`.trim();
-          doc.text(`${p.publication_type || '—'}  |  ${p.platform || '—'}  |  ${when || '—'}  |  ${p.author_details || '—'}`, margin, y);
-          y += 18;
-          doc.setDrawColor(235, 235, 235);
-          doc.line(margin, y, pageWidth - margin, y);
-          y += 14;
-        });
+          doc.setFontSize(10);
+          doc.setTextColor(...MUTED);
+          doc.text('No publications logged.', margin, y);
+          y += 16;
+        } else {
+          publications.forEach((p) => {
+            if (y > pageHeight - margin - 60) newPage();
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(11);
+            doc.setTextColor(...NAVY);
+            doc.text(p.topic || 'Untitled', margin, y);
+            y += 14;
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(9);
+            doc.setTextColor(...MUTED);
+            const when = `${p.month ? MONTHS[p.month - 1] : ''} ${p.year || ''}`.trim();
+            doc.text(`${p.publication_type || '—'}  |  ${p.platform || '—'}  |  ${when || '—'}  |  ${p.author_details || '—'}`, margin, y);
+            y += 18;
+            doc.setDrawColor(...BORDER);
+            doc.line(margin, y, pageWidth - margin, y);
+            y += 14;
+          });
+        }
       }
+
+      addPageNumber();
+
+      const fileName = `logbook${activeFilters.length > 0 ? '_filtered' : ''}_${new Date().toISOString().split('T')[0]}.pdf`;
+      doc.save(fileName);
+    } finally {
+      setExporting(false);
     }
-
-    // Final page number on last page
-    addPageNumber();
-
-    const fileName = `surgical_logbook${activeFilters.length > 0 ? '_filtered' : ''}_${new Date().toISOString().split('T')[0]}.pdf`;
-    doc.save(fileName);
-    setExporting(false);
   };
 
   if (loading) {
@@ -397,6 +561,21 @@ export default function SurgicalLogbook() {
         >
           <Download className="w-4 h-4" /> {exporting ? 'Generating...' : 'Export Logbook (PDF)'}
         </button>
+      </div>
+
+      {/* Cover page details */}
+      <div className="bg-white rounded-xl border border-slate-200 p-4">
+        <p className="text-sm font-medium text-slate-600 mb-3">Cover Page Details (used for the PDF only, not saved)</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label htmlFor="log-doctor-name" className="block text-xs font-medium text-slate-500 mb-1">Doctor Name</label>
+            <input id="log-doctor-name" name="doctorName" type="text" value={doctorName} onChange={(e) => setDoctorName(e.target.value)} placeholder="e.g. Dr. Jane Smith" className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
+          </div>
+          <div>
+            <label htmlFor="log-qualifications" className="block text-xs font-medium text-slate-500 mb-1">Qualifications</label>
+            <input id="log-qualifications" name="qualifications" type="text" value={qualifications} onChange={(e) => setQualifications(e.target.value)} placeholder="e.g. MS, MCh" className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
+          </div>
+        </div>
       </div>
 
       {/* Filters */}

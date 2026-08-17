@@ -12,7 +12,7 @@ interface LayoutProps {
 
 const navItems: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'patients', label: 'Surgical Patients', icon: Users },
+  { id: 'patients', label: 'Patient Details', icon: Users },
   { id: 'hospitals', label: 'Hospitals', icon: Building2 },
   { id: 'revenue', label: 'Revenue', icon: DollarSign },
   { id: 'reports', label: 'Reports', icon: FileBarChart },

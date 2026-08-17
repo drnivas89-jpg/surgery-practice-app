@@ -3,25 +3,55 @@ import { supabase } from '@/lib/supabase';
 import { Attendance } from '@/lib/types';
 import { formatDate } from '@/lib/helpers';
 import { getColSummary } from '@/lib/col';
-import { Zap, Calendar, LogOut, AlertCircle } from 'lucide-react';
+import { Zap, Calendar, LogOut, AlertCircle, Pencil, Trash2, Unlink, Check, X } from 'lucide-react';
 
 export default function COLDashboard() {
   const [attendance, setAttendance] = useState<Attendance[]>([]);
   const [loading, setLoading] = useState(true);
+  const [editingCreditId, setEditingCreditId] = useState<string | null>(null);
+  const [editDate, setEditDate] = useState('');
 
-  useEffect(() => {
-    (async () => {
-      const { data: att } = await supabase
-        .from('attendance')
-        .select('*, hospital:hospitals(*)')
-        .order('attendance_date', { ascending: false });
-      setAttendance(att || []);
-      setLoading(false);
-    })();
-  }, []);
+  const load = async () => {
+    const { data: att } = await supabase
+      .from('attendance')
+      .select('*, hospital:hospitals(*)')
+      .order('attendance_date', { ascending: false });
+    setAttendance(att || []);
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, []);
 
   const summary = useMemo(() => getColSummary(attendance), [attendance]);
-  const availableDateSet = useMemo(() => new Set(summary.availableDates.map((d) => d.date)), [summary]);
+  // Keyed by hospital+date, not date alone — two hospitals can share a
+  // calendar date and are separate credits.
+  const availableKeySet = useMemo(
+    () => new Set(summary.availableDates.map((d) => `${d.hospitalId}::${d.date}`)),
+    [summary]
+  );
+
+  const startEditCredit = (attendanceId: string, currentDate: string) => {
+    setEditingCreditId(attendanceId);
+    setEditDate(currentDate.substring(0, 10));
+  };
+
+  const saveEditCredit = async (attendanceId: string) => {
+    await supabase.from('attendance').update({ attendance_date: editDate }).eq('id', attendanceId);
+    setEditingCreditId(null);
+    load();
+  };
+
+  const deleteCredit = async (attendanceId: string) => {
+    if (!confirm('Delete this COL credit? If it has already been redeemed by a leave, that leave will lose its link.')) return;
+    await supabase.from('attendance').delete().eq('id', attendanceId);
+    load();
+  };
+
+  const unlinkUsage = async (leaveAttendanceId: string) => {
+    if (!confirm('Unlink this leave from the COL credit it redeemed? The credit becomes available again.')) return;
+    await supabase.from('attendance').update({ compensated_working_date: null }).eq('id', leaveAttendanceId);
+    load();
+  };
 
   if (loading) {
     return (
@@ -37,6 +67,7 @@ export default function COLDashboard() {
         <h1 className="text-2xl font-bold text-slate-800">COL Extra Duty Dashboard</h1>
         <p className="text-slate-500 text-sm mt-0.5">
           Track COL (Compensatory Off) credits earned via extra duty, and which leave dates redeemed them.
+          COL is hospital-strict — a credit can only be redeemed at the hospital it was earned at.
         </p>
       </div>
 
@@ -81,17 +112,29 @@ export default function COLDashboard() {
                   <th className="px-3 py-2 font-medium">Leave Date</th>
                   <th className="px-3 py-2 font-medium">Compensated Working Date</th>
                   <th className="px-3 py-2 font-medium">Hospital</th>
+                  <th className="px-3 py-2 font-medium"></th>
                 </tr>
               </thead>
               <tbody>
                 {summary.usage.map((u, i) => (
-                  <tr key={i} className="border-b border-slate-50">
+                  <tr key={i} className="border-b border-slate-50 group">
                     <td className="px-3 py-2.5 text-slate-600">{formatDate(u.leaveDate)}</td>
                     <td className="px-3 py-2.5 font-medium text-slate-700">
                       {formatDate(u.compensatedWorkingDate)}
                       {u.inferred && <span className="ml-2 text-[10px] font-normal text-slate-400" title="Recorded before explicit linking existed — inferred by date order">(inferred)</span>}
                     </td>
                     <td className="px-3 py-2.5 text-slate-500">{u.hospitalName}</td>
+                    <td className="px-3 py-2.5 text-right">
+                      {!u.inferred && (
+                        <button
+                          onClick={() => unlinkUsage(u.leaveAttendanceId)}
+                          className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-500 transition inline-flex items-center gap-1 text-xs"
+                          title="Unlink this redemption"
+                        >
+                          <Unlink className="w-3.5 h-3.5" /> Unlink
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -108,7 +151,8 @@ export default function COLDashboard() {
         ) : (
           <div className="space-y-2">
             {summary.creditDates.map((c) => {
-              const available = availableDateSet.has(c.date);
+              const available = availableKeySet.has(`${c.hospitalId}::${c.date}`);
+              const isEditing = editingCreditId === c.attendanceId;
               return (
                 <div
                   key={c.attendanceId}
@@ -122,19 +166,38 @@ export default function COLDashboard() {
                     <Zap className="w-4 h-4" />
                   </div>
                   <div className="flex-1">
-                    <p className={`text-sm font-medium ${available ? 'text-slate-700' : 'text-slate-400 line-through'}`}>
-                      {formatDate(c.date)}
-                    </p>
+                    {isEditing ? (
+                      <input
+                        type="date"
+                        value={editDate}
+                        onChange={(e) => setEditDate(e.target.value)}
+                        className="px-2 py-1 rounded border border-slate-200 text-sm"
+                        autoFocus
+                      />
+                    ) : (
+                      <p className={`text-sm font-medium ${available ? 'text-slate-700' : 'text-slate-400 line-through'}`}>
+                        {formatDate(c.date)}
+                      </p>
+                    )}
                     <p className="text-xs text-slate-400">{c.hospitalName}</p>
                   </div>
-                  {available ? (
-                    <span className="text-xs font-medium text-amber-600 bg-amber-100 px-2.5 py-1 rounded-full">
-                      Pending
-                    </span>
+                  {isEditing ? (
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => saveEditCredit(c.attendanceId)} className="p-1.5 text-emerald-600 hover:bg-emerald-100 rounded-lg transition"><Check className="w-4 h-4" /></button>
+                      <button onClick={() => setEditingCreditId(null)} className="p-1.5 text-slate-400 hover:bg-slate-100 rounded-lg transition"><X className="w-4 h-4" /></button>
+                    </div>
                   ) : (
-                    <span className="text-xs font-medium text-slate-400 bg-slate-100 px-2.5 py-1 rounded-full">
-                      Compensated
-                    </span>
+                    <>
+                      {available ? (
+                        <span className="text-xs font-medium text-amber-600 bg-amber-100 px-2.5 py-1 rounded-full">Pending</span>
+                      ) : (
+                        <span className="text-xs font-medium text-slate-400 bg-slate-100 px-2.5 py-1 rounded-full">Compensated</span>
+                      )}
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => startEditCredit(c.attendanceId, c.date)} className="p-1.5 text-slate-400 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition"><Pencil className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => deleteCredit(c.attendanceId)} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition"><Trash2 className="w-3.5 h-3.5" /></button>
+                      </div>
+                    </>
                   )}
                 </div>
               );

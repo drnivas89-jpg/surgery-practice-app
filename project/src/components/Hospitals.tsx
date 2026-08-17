@@ -53,7 +53,10 @@ export default function Hospitals() {
   const [attNotes, setAttNotes] = useState('');
   const [attError, setAttError] = useState<string | null>(null);
 
-  const colSummary = useMemo(() => getColSummary(attendance), [attendance]);
+  // COL credits are hospital-strict: a credit earned at hospital A can only
+  // be redeemed at hospital A, so this is scoped to whichever hospital is
+  // currently selected in the attendance form.
+  const colSummary = useMemo(() => getColSummary(attendance, attHospital || undefined), [attendance, attHospital]);
 
   // Entry form
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -797,9 +800,10 @@ export default function Hospitals() {
                 <select id="att-compensated-date" name="compensatedDate" value={attCompensatedDate} onChange={(e) => setAttCompensatedDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none bg-white">
                   <option value="">Not a COL leave</option>
                   {colSummary.availableDates.map((c) => (
-                    <option key={c.date} value={c.date}>{formatDate(c.date)} — {c.hospitalName}</option>
+                    <option key={c.date} value={c.date}>{formatDate(c.date)}</option>
                   ))}
                 </select>
+                <p className="text-xs text-slate-400 mt-1">Only showing COL credits earned at the hospital selected above — COL can only be redeemed at the same hospital it was earned.</p>
               </div>
             )}
             {attStatus === 'extra_duty' && (
