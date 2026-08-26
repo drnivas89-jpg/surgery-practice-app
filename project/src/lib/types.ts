@@ -59,12 +59,16 @@ export interface Attendance {
   hospital?: Hospital;
 }
 
+export type ProcedureCategory = 'Major' | 'Minor' | 'Bedside' | 'Endoscopy' | 'Others';
+
 export interface Surgery {
   id: string;
   patient_id: string;
   user_id: string;
   procedure_name: string;
   surgery_type: string;
+  procedure_category: ProcedureCategory | null;
+  implants: string;
   anaesthesia_type: string;
   procedure_notes: string;
   surgery_date: string | null;
@@ -94,6 +98,16 @@ export interface FollowUp {
   year: number | null;
   findings: string;
   report_image_paths: string[];
+  created_at: string;
+}
+
+export interface FollowUpVisit {
+  id: string;
+  patient_id: string;
+  user_id: string;
+  visit_date: string;
+  notes: string;
+  prescription_items: PrescriptionTableData;
   created_at: string;
 }
 
@@ -140,6 +154,7 @@ export interface Investigation {
   investigation_date: string | null;
   value: string;
   notes: string;
+  attachment_paths: string[];
   created_at: string;
 }
 

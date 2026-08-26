@@ -172,6 +172,18 @@ export default function Hospitals() {
     if (attStatus === 'leave' && !attLeaveType.trim()) { setAttError('Please enter the type of leave.'); return; }
     if (attStatus === 'extra_duty' && !attExtraType.trim()) { setAttError('Please enter the extra duty type.'); return; }
     if (!user) { setAttError('You must be signed in to add attendance.'); return; }
+
+    // Only one attendance record per hospital+date is allowed — if one
+    // already exists (e.g. auto-marked Present from logging a patient
+    // visit earlier that day), confirm before this save overwrites it.
+    const { data: existing } = await supabase
+      .from('attendance')
+      .select('id')
+      .eq('hospital_id', attHospital)
+      .eq('attendance_date', attDate)
+      .maybeSingle();
+    if (existing && !confirm('A record already exists for this hospital on this date. Replace it with this entry?')) return;
+
     const payload = {
       user_id: user.id,
       hospital_id: attHospital,
@@ -183,10 +195,10 @@ export default function Hospitals() {
       extra_duty_type: attStatus === 'extra_duty' ? attExtraType.trim() : null,
       notes: attNotes,
     };
-    const { error } = await supabase.from('attendance').insert(payload);
+    const { error } = await supabase.from('attendance').upsert(payload, { onConflict: 'user_id,hospital_id,attendance_date' });
     if (error) {
       setAttError(error.code === '23505'
-        ? 'Attendance is already recorded for this hospital on this date (or that COL credit date is already redeemed).'
+        ? 'That COL credit date is already redeemed by another leave entry.'
         : error.message);
       return;
     }

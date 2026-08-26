@@ -13,3 +13,7 @@ dist-ssr/
 # OS
 .DS_Store
 Thumbs.db
+
+# Supabase CLI local state
+supabase/.temp/
+supabase/.branches/

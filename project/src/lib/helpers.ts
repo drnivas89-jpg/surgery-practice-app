@@ -66,9 +66,13 @@ export async function upsertDailyEntryCount(
 }
 
 // Auto-marks the doctor Present at a hospital for a date, the first time
-// any OP/IP/Opinion patient entry (or a manual daily entry) is recorded
-// for that hospital+date. Idempotent — safe to call repeatedly; the second
-// call just returns the existing row instead of creating a duplicate.
+// any OP/IP/Opinion patient entry, surgery, investigation, or follow-up is
+// recorded for that hospital+date. Idempotent — safe to call repeatedly;
+// once any attendance row exists for that hospital+date (present, leave,
+// or extra_duty — only one is ever allowed per day) this just returns it
+// unchanged rather than creating or overwriting a duplicate. In
+// particular, an explicit Leave/Extra Duty the doctor already logged for
+// that day is never silently flipped back to Present.
 export async function ensurePresentAttendance(
   userId: string,
   hospitalId: string,
@@ -79,7 +83,6 @@ export async function ensurePresentAttendance(
     .select('id')
     .eq('hospital_id', hospitalId)
     .eq('attendance_date', date)
-    .eq('status', 'present')
     .maybeSingle();
 
   if (existing) return { created: false, id: existing.id };

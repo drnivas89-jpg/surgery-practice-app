@@ -5,16 +5,23 @@ import { Patient, Hospital, Payment, Surgery, MonthlyEntry, Attendance } from '@
 import { formatDate, formatCurrency, daysUntil } from '@/lib/helpers';
 import { getColSummary } from '@/lib/col';
 import { View } from './Layout';
+import HospitalDailyTable from './HospitalDailyTable';
 import {
   Calendar, AlertTriangle, Clock, Zap, IndianRupee, Users, Building2, Activity,
-  Search, ChevronLeft, ChevronRight, ArrowLeft, Stethoscope, MessageCircleQuestion, Award, X,
+  Search, ChevronLeft, ChevronRight, ArrowLeft, Stethoscope, Award, X,
 } from 'lucide-react';
 
 const SURGERY_CATEGORIES = ['Major', 'Minor', 'Bedside', 'Endoscopy', 'Others'] as const;
 type SurgeryCategory = typeof SURGERY_CATEGORIES[number];
 
-function categorize(surgeryType: string | null | undefined): SurgeryCategory {
-  const t = (surgeryType || '').trim().toLowerCase();
+// Prefers the explicit procedure_category column; falls back to matching
+// the legacy free-text surgery_type against the category names, for
+// surgery rows saved before procedure_category existed.
+function categorize(surgery: { procedure_category?: string | null; surgery_type: string | null | undefined }): SurgeryCategory {
+  if (surgery.procedure_category && (SURGERY_CATEGORIES as readonly string[]).includes(surgery.procedure_category)) {
+    return surgery.procedure_category as SurgeryCategory;
+  }
+  const t = (surgery.surgery_type || '').trim().toLowerCase();
   const match = SURGERY_CATEGORIES.find((c) => c.toLowerCase() === t);
   return match || 'Others';
 }
@@ -88,6 +95,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const [attendance, setAttendance] = useState<Attendance[]>([]);
   const [loading, setLoading] = useState(true);
   const [dateListModal, setDateListModal] = useState<{ title: string; rows: DateListRow[] } | null>(null);
+  const [editDayModal, setEditDayModal] = useState<{ hospitalId: string; hospitalName: string; date: string } | null>(null);
 
   const [level, setLevel] = useState<Level>('global');
   const [selectedHospitalId, setSelectedHospitalId] = useState<string | null>(null);
@@ -97,25 +105,27 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth());
   const [search, setSearch] = useState('');
 
+  const load = async () => {
+    const [{ data: p }, { data: h }, { data: pay }, { data: sur }, { data: me }, { data: att }] = await Promise.all([
+      supabase.from('patients').select('*, hospital:hospitals(*)').order('created_at', { ascending: false }),
+      supabase.from('hospitals').select('*').order('name'),
+      supabase.from('payments').select('*, patient:patients(*)'),
+      supabase.from('surgeries').select('*').order('surgery_date', { ascending: false }),
+      supabase.from('monthly_entries').select('*, hospital:hospitals(*)').order('month', { ascending: false }),
+      supabase.from('attendance').select('*, hospital:hospitals(*)').order('attendance_date', { ascending: false }),
+    ]);
+    setPatients(p || []);
+    setHospitals(h || []);
+    setPayments(pay || []);
+    setSurgeries(sur || []);
+    setMonthlyEntries(me || []);
+    setAttendance(att || []);
+    setLoading(false);
+  };
+
   useEffect(() => {
     if (!user) return;
-    (async () => {
-      const [{ data: p }, { data: h }, { data: pay }, { data: sur }, { data: me }, { data: att }] = await Promise.all([
-        supabase.from('patients').select('*, hospital:hospitals(*)').order('created_at', { ascending: false }),
-        supabase.from('hospitals').select('*').order('name'),
-        supabase.from('payments').select('*, patient:patients(*)'),
-        supabase.from('surgeries').select('*').order('surgery_date', { ascending: false }),
-        supabase.from('monthly_entries').select('*, hospital:hospitals(*)').order('month', { ascending: false }),
-        supabase.from('attendance').select('*, hospital:hospitals(*)').order('attendance_date', { ascending: false }),
-      ]);
-      setPatients(p || []);
-      setHospitals(h || []);
-      setPayments(pay || []);
-      setSurgeries(sur || []);
-      setMonthlyEntries(me || []);
-      setAttendance(att || []);
-      setLoading(false);
-    })();
+    load();
   }, [user]);
 
   const selectedMonthStart = new Date(selectedYear, selectedMonth, 1).toISOString().substring(0, 10);
@@ -201,7 +211,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     const opinionCount = hospMonthEntries.reduce((s, me) => s + me.opinion_patients, 0);
 
     const surgeryCategories = emptyCategoryCounts();
-    hospMonthSurgeries.forEach((s) => { surgeryCategories[categorize(s.surgery_type)]++; });
+    hospMonthSurgeries.forEach((s) => { surgeryCategories[categorize(s)]++; });
 
     const feesGenerated =
       hospMonthPatients.reduce((s, p) => s + (p.fees || 0), 0) +
@@ -238,19 +248,17 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     // only, since COL is hospital-strict.
     const hospColSummary = getColSummary(attendance, h.id);
 
-    const datesWithEntry = new Set<string>([
-      ...hospMonthEntries.map((me) => (me.entry_date || me.month).substring(0, 10)),
-      ...hospAtt.map((a) => a.attendance_date),
-    ]);
-    const missingEntryDates = elapsedDates.filter((d) => !datesWithEntry.has(d));
-
     // Date-wise breakdown for Level 3 — built once here so drilling into a
-    // hospital needs no extra query.
-    const dayMap = new Map<string, { date: string; attendance: Attendance[]; patients: Patient[]; surgeries: Surgery[]; entry: MonthlyEntry | null }>();
+    // hospital needs no extra query. Every elapsed date in the month gets a
+    // row (via ensureDay below), even ones with zero activity, so the
+    // Section 2 table can show a genuinely "missing" (red) row for dates
+    // nothing at all was logged, not just dates that already have data.
+    const dayMap = new Map<string, { date: string; attendance: Attendance[]; patients: Patient[]; surgeries: Surgery[]; payments: Payment[]; entry: MonthlyEntry | null }>();
     const ensureDay = (date: string) => {
-      if (!dayMap.has(date)) dayMap.set(date, { date, attendance: [], patients: [], surgeries: [], entry: null });
+      if (!dayMap.has(date)) dayMap.set(date, { date, attendance: [], patients: [], surgeries: [], payments: [], entry: null });
       return dayMap.get(date)!;
     };
+    elapsedDates.forEach((d) => ensureDay(d));
     hospAtt.forEach((a) => ensureDay(a.attendance_date).attendance.push(a));
     hospMonthEntries.forEach((me) => { ensureDay((me.entry_date || me.month).substring(0, 10)).entry = me; });
     hospMonthPatients.forEach((p) => {
@@ -258,7 +266,45 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       if (d) ensureDay(d.substring(0, 10)).patients.push(p);
     });
     hospMonthSurgeries.forEach((s) => { if (s.surgery_date) ensureDay(s.surgery_date.substring(0, 10)).surgeries.push(s); });
-    const days = Array.from(dayMap.values()).sort((a, b) => b.date.localeCompare(a.date));
+    hospMonthPayments.forEach((pay) => { if (pay.payment_date) ensureDay(pay.payment_date.substring(0, 10)).payments.push(pay); });
+
+    const days = Array.from(dayMap.values())
+      .sort((a, b) => b.date.localeCompare(a.date))
+      .map((d) => {
+        const attRow = d.attendance[0] || null;
+        const attendanceStatusLabel = attRow
+          ? attRow.status === 'present'
+            ? (attRow.duty_type === 'duty' ? 'Duty' : 'Present')
+            : attRow.status === 'leave'
+            ? 'Leave'
+            : 'Extra Duty'
+          : null;
+        const dayOp = d.entry?.op_patients || 0;
+        const dayIp = d.patients.filter((p) => p.patient_type === 'ip').length;
+        const dayOpinion = d.entry?.opinion_patients || 0;
+        const daySurgeries = d.surgeries.length;
+        const dayFeesGenerated = (d.entry?.fees_generated || 0) + d.patients.reduce((s, p) => s + (p.fees || 0), 0);
+        const dayFeesReceived = (d.entry?.fees_received || 0) + d.payments.reduce((s, p) => s + p.amount, 0);
+        const hasAnyRecord = d.attendance.length > 0 || !!d.entry || d.patients.length > 0 || d.surgeries.length > 0 || d.payments.length > 0;
+        const isZeroActivity = attendanceStatusLabel === 'Present' && dayOp === 0 && dayIp === 0 && dayOpinion === 0;
+        return {
+          ...d,
+          hospitalName: h.name,
+          attendanceStatusLabel,
+          opCount: dayOp,
+          ipCount: dayIp,
+          opinionCount: dayOpinion,
+          surgeriesCount: daySurgeries,
+          feesGenerated: dayFeesGenerated,
+          feesReceived: dayFeesReceived,
+          pendingFees: dayFeesGenerated - dayFeesReceived,
+          isMissing: !hasAnyRecord,
+          isZeroActivity,
+          hasAnyRecord,
+        };
+      });
+
+    const missingEntryDates = days.filter((d) => d.isMissing).map((d) => d.date);
 
     return {
       hospital: h,
@@ -324,6 +370,15 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   };
 
   const openHospital = (hospitalId: string) => { setSelectedHospitalId(hospitalId); setLevel('detail'); };
+
+  const handleDeleteDay = async (hospitalId: string, date: string) => {
+    if (!confirm(`Delete all daily-entry and attendance records for ${formatDate(date)}? This cannot be undone.`)) return;
+    await Promise.all([
+      supabase.from('monthly_entries').delete().eq('hospital_id', hospitalId).eq('entry_date', date),
+      supabase.from('attendance').delete().eq('hospital_id', hospitalId).eq('attendance_date', date),
+    ]);
+    load();
+  };
 
   if (loading) {
     return (
@@ -598,44 +653,166 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
             )}
           </div>
 
-          <div className="bg-white rounded-xl border border-slate-200 p-5">
-            {selectedHospital.days.length === 0 ? (
-              <p className="text-sm text-slate-400 py-4 text-center">No date-wise records this month.</p>
-            ) : (
-              <div className="space-y-2">
-                {selectedHospital.days.map((d) => (
-                  <div key={d.date} className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm">
-                    <div className="flex items-center justify-between">
-                      <span className="font-medium text-slate-700">{formatDate(d.date)}</span>
-                      {d.attendance.map((a) => (
-                        <span key={a.id} className="text-xs text-slate-400">
-                          {a.status === 'present' ? (a.duty_type === 'duty' ? 'Duty' : 'Present') : a.status === 'leave' ? `Leave${a.leave_type ? ` (${a.leave_type})` : ''}${a.compensated_working_date ? ' [COL]' : ''}` : `Extra Duty${a.extra_duty_type ? ` (${a.extra_duty_type})` : ''}`}
-                        </span>
-                      ))}
-                    </div>
-                    {d.entry && (
-                      <p className="text-xs text-slate-500 mt-1">Daily entry — OP {d.entry.op_patients}, IP {d.entry.ip_patients}, Opinion {d.entry.opinion_patients}, {formatCurrency(d.entry.fees_generated)} generated</p>
-                    )}
-                    {d.patients.map((p) => (
-                      <p key={p.id} className="text-xs text-slate-500 mt-1 flex items-center gap-1">
-                        {p.patient_type === 'ip' ? <Stethoscope className="w-3 h-3" /> : p.patient_type === 'opinion' ? <MessageCircleQuestion className="w-3 h-3" /> : <Users className="w-3 h-3" />}
-                        {p.patient_name} ({p.unique_id}) — {formatCurrency(p.fees || 0)}
-                      </p>
-                    ))}
-                    {d.surgeries.map((s) => (
-                      <p key={s.id} className="text-xs text-slate-500 mt-1 flex items-center gap-1"><Activity className="w-3 h-3" /> {s.procedure_name} ({categorize(s.surgery_type)})</p>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <HospitalDailyTable
+            rows={selectedHospital.days}
+            onEditDate={(date) => setEditDayModal({ hospitalId: selectedHospital.hospital.id, hospitalName: selectedHospital.hospital.name, date })}
+            onDeleteDate={(date) => handleDeleteDay(selectedHospital.hospital.id, date)}
+          />
         </div>
       )}
 
       {dateListModal && (
         <DateListModal title={dateListModal.title} rows={dateListModal.rows} onClose={() => setDateListModal(null)} />
       )}
+
+      {editDayModal && (
+        <EditDayModal
+          hospitalId={editDayModal.hospitalId}
+          hospitalName={editDayModal.hospitalName}
+          date={editDayModal.date}
+          existingEntry={monthlyEntries.find((me) => me.hospital_id === editDayModal.hospitalId && (me.entry_date || me.month).substring(0, 10) === editDayModal.date) || null}
+          existingAttendance={attendance.find((a) => a.hospital_id === editDayModal.hospitalId && a.attendance_date === editDayModal.date) || null}
+          userId={user!.id}
+          onClose={() => setEditDayModal(null)}
+          onSaved={() => { setEditDayModal(null); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+type AttStatusChoice = 'present' | 'duty' | 'leave' | 'extra_duty';
+
+function EditDayModal({ hospitalId, hospitalName, date, existingEntry, existingAttendance, userId, onClose, onSaved }: {
+  hospitalId: string; hospitalName: string; date: string;
+  existingEntry: MonthlyEntry | null; existingAttendance: Attendance | null; userId: string;
+  onClose: () => void; onSaved: () => void;
+}) {
+  const [op, setOp] = useState(existingEntry?.op_patients?.toString() || '');
+  const [opinion, setOpinion] = useState(existingEntry?.opinion_patients?.toString() || '');
+  const [feesGen, setFeesGen] = useState(existingEntry?.fees_generated?.toString() || '');
+  const [feesRec, setFeesRec] = useState(existingEntry?.fees_received?.toString() || '');
+  const initialStatus: AttStatusChoice = existingAttendance
+    ? existingAttendance.status === 'present'
+      ? (existingAttendance.duty_type === 'duty' ? 'duty' : 'present')
+      : existingAttendance.status === 'leave' ? 'leave' : 'extra_duty'
+    : 'present';
+  const [attStatus, setAttStatus] = useState<AttStatusChoice>(initialStatus);
+  const [leaveType, setLeaveType] = useState(existingAttendance?.leave_type || '');
+  const [extraType, setExtraType] = useState(existingAttendance?.extra_duty_type || '');
+  const [recordAttendance, setRecordAttendance] = useState(!!existingAttendance);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSaving(true);
+
+    const entryPayload = {
+      user_id: userId,
+      hospital_id: hospitalId,
+      entry_date: date,
+      month: date.substring(0, 7) + '-01',
+      op_patients: parseInt(op) || 0,
+      opinion_patients: parseInt(opinion) || 0,
+      fees_generated: parseFloat(feesGen) || 0,
+      fees_received: parseFloat(feesRec) || 0,
+      notes: existingEntry?.notes || '',
+    };
+    const { error: entryError } = await supabase.from('monthly_entries').upsert(entryPayload, { onConflict: 'hospital_id,entry_date' });
+    if (entryError) { setError(entryError.message); setSaving(false); return; }
+
+    if (recordAttendance) {
+      if (attStatus === 'leave' && !leaveType.trim()) { setError('Please enter the type of leave.'); setSaving(false); return; }
+      if (attStatus === 'extra_duty' && !extraType.trim()) { setError('Please enter the extra duty type.'); setSaving(false); return; }
+      const attPayload = {
+        user_id: userId,
+        hospital_id: hospitalId,
+        attendance_date: date,
+        status: attStatus === 'duty' ? 'present' : attStatus,
+        duty_type: attStatus === 'present' ? 'normal' : attStatus === 'duty' ? 'duty' : null,
+        leave_type: attStatus === 'leave' ? leaveType.trim() : null,
+        extra_duty_type: attStatus === 'extra_duty' ? extraType.trim() : null,
+        compensated_working_date: existingAttendance?.compensated_working_date || null,
+        notes: existingAttendance?.notes || '',
+      };
+      const { error: attError } = await supabase.from('attendance').upsert(attPayload, { onConflict: 'user_id,hospital_id,attendance_date' });
+      if (attError) { setError(attError.message); setSaving(false); return; }
+    } else if (existingAttendance) {
+      await supabase.from('attendance').delete().eq('id', existingAttendance.id);
+    }
+
+    setSaving(false);
+    onSaved();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-800">Edit {formatDate(date)}</h2>
+            <p className="text-xs text-slate-400">{hospitalName}</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
+        </div>
+        <form onSubmit={handleSave} className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-600 mb-1.5">OP Patients</label>
+              <input type="number" value={op} onChange={(e) => setOp(e.target.value)} className="form-input" placeholder="0" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-600 mb-1.5">Opinion Entries</label>
+              <input type="number" value={opinion} onChange={(e) => setOpinion(e.target.value)} className="form-input" placeholder="0" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-600 mb-1.5">Fees Generated</label>
+              <input type="number" step="0.01" value={feesGen} onChange={(e) => setFeesGen(e.target.value)} className="form-input" placeholder="0" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-600 mb-1.5">Fees Received</label>
+              <input type="number" step="0.01" value={feesRec} onChange={(e) => setFeesRec(e.target.value)} className="form-input" placeholder="0" />
+            </div>
+          </div>
+          <p className="text-xs text-slate-400">IP count isn't editable here — it's derived from individually tracked IP patient records (see Patient Details).</p>
+
+          <div className="pt-3 border-t border-slate-100">
+            <label className="flex items-center gap-2 cursor-pointer mb-2">
+              <input type="checkbox" checked={recordAttendance} onChange={(e) => setRecordAttendance(e.target.checked)} className="w-4 h-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500" />
+              <span className="text-sm font-medium text-slate-600">Record attendance for this date</span>
+            </label>
+            {recordAttendance && (
+              <div className="space-y-3">
+                <div className="grid grid-cols-4 gap-1.5">
+                  {(['present', 'duty', 'leave', 'extra_duty'] as AttStatusChoice[]).map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => setAttStatus(s)}
+                      className={`py-2 rounded-lg text-xs font-medium transition ${attStatus === s ? 'bg-sky-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                    >
+                      {s === 'present' ? 'Present' : s === 'duty' ? 'Duty' : s === 'leave' ? 'Leave' : 'Extra Duty'}
+                    </button>
+                  ))}
+                </div>
+                {attStatus === 'leave' && (
+                  <input type="text" value={leaveType} onChange={(e) => setLeaveType(e.target.value)} className="form-input" placeholder="Type of leave (e.g. Casual, Sick)" />
+                )}
+                {attStatus === 'extra_duty' && (
+                  <input type="text" value={extraType} onChange={(e) => setExtraType(e.target.value)} className="form-input" placeholder="Extra duty type (e.g. extra, col, others)" />
+                )}
+              </div>
+            )}
+          </div>
+
+          {error && <p className="text-sm text-red-600">{error}</p>}
+          <button type="submit" disabled={saving} className="w-full py-2.5 bg-sky-600 text-white rounded-lg font-medium hover:bg-sky-700 transition disabled:opacity-60">
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+        </form>
+      </div>
     </div>
   );
 }

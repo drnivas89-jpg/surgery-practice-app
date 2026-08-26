@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import { Patient, Surgery, FollowUp, Payment, SurgeryType, Investigation, Vitals } from '@/lib/types';
+import { Patient, Surgery, FollowUp, FollowUpVisit, Payment, SurgeryType, Investigation, Vitals, ProcedureCategory } from '@/lib/types';
 import { formatDate, formatCurrency, uploadImage, getImageUrl, ensurePresentAttendance } from '@/lib/helpers';
-import PrescriptionTable from './PrescriptionTable';
+import PrescriptionTable, { DEFAULT_PRESCRIPTION } from './PrescriptionTable';
 import PresentDutyPrompt from './PresentDutyPrompt';
 import {
   ArrowLeft, Pencil, Activity, UserRound, FlaskConical, IndianRupee, Plus, X,
-  Trash2, Settings, TestTube, HeartPulse, ClipboardCheck,
+  Trash2, Settings, TestTube, HeartPulse, ClipboardCheck, MessageSquare, Paperclip, Wrench,
 } from 'lucide-react';
+
+const PROCEDURE_CATEGORIES: ProcedureCategory[] = ['Major', 'Minor', 'Bedside', 'Endoscopy', 'Others'];
 
 interface PatientDetailProps {
   patientId: string;
@@ -39,6 +41,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   const [patient, setPatient] = useState<Patient | null>(null);
   const [surgeries, setSurgeries] = useState<Surgery[]>([]);
   const [followUps, setFollowUps] = useState<FollowUp[]>([]);
+  const [followUpVisits, setFollowUpVisits] = useState<FollowUpVisit[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [investigations, setInvestigations] = useState<Investigation[]>([]);
   const [vitals, setVitals] = useState<Vitals[]>([]);
@@ -54,6 +57,8 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   const [editingSurgeryId, setEditingSurgeryId] = useState<string | null>(null);
   const [procName, setProcName] = useState('');
   const [surgeryType, setSurgeryType] = useState('');
+  const [procedureCategory, setProcedureCategory] = useState<ProcedureCategory | ''>('');
+  const [implants, setImplants] = useState('');
   const [surgeryRole, setSurgeryRole] = useState<'done_by_me' | 'assisted_by_me'>('done_by_me');
   const [anaesthesia, setAnaesthesia] = useState('');
   const [procNotes, setProcNotes] = useState('');
@@ -63,7 +68,14 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   const [consentImages, setConsentImages] = useState<File[]>([]);
   const [existingConsentImages, setExistingConsentImages] = useState<string[]>([]);
 
-  // Follow-up form
+  // Follow-up visit form (notes + prescription, dated visit history)
+  const [showVisitForm, setShowVisitForm] = useState(false);
+  const [editingVisitId, setEditingVisitId] = useState<string | null>(null);
+  const [visitDate, setVisitDate] = useState(new Date().toISOString().split('T')[0]);
+  const [visitNotes, setVisitNotes] = useState('');
+  const [visitPrescription, setVisitPrescription] = useState(DEFAULT_PRESCRIPTION);
+
+  // Follow-up (pathology: FNAC/biopsy) form
   const [showFollowUpForm, setShowFollowUpForm] = useState(false);
   const [editingFollowUpId, setEditingFollowUpId] = useState<string | null>(null);
   const [fuType, setFuType] = useState<'fnac' | 'biopsy'>('fnac');
@@ -88,6 +100,8 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   const [invDate, setInvDate] = useState('');
   const [invValue, setInvValue] = useState('');
   const [invNotes, setInvNotes] = useState('');
+  const [invAttachments, setInvAttachments] = useState<File[]>([]);
+  const [existingInvAttachments, setExistingInvAttachments] = useState<string[]>([]);
 
   // Vitals form
   const [showVitalsForm, setShowVitalsForm] = useState(false);
@@ -102,10 +116,11 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   const [vNotes, setVNotes] = useState('');
 
   const load = async () => {
-    const [{ data: p }, { data: s }, { data: f }, { data: pay }, { data: st }, { data: inv }, { data: vit }] = await Promise.all([
+    const [{ data: p }, { data: s }, { data: f }, { data: fv }, { data: pay }, { data: st }, { data: inv }, { data: vit }] = await Promise.all([
       supabase.from('patients').select('*, hospital:hospitals(*)').eq('id', patientId).maybeSingle(),
       supabase.from('surgeries').select('*').eq('patient_id', patientId).order('created_at', { ascending: false }),
       supabase.from('follow_ups').select('*').eq('patient_id', patientId).order('created_at', { ascending: false }),
+      supabase.from('follow_up_visits').select('*').eq('patient_id', patientId).order('visit_date', { ascending: false }),
       supabase.from('payments').select('*').eq('patient_id', patientId).order('payment_date', { ascending: false }),
       supabase.from('surgery_types').select('*').order('name'),
       supabase.from('investigations').select('*').eq('patient_id', patientId).order('investigation_date', { ascending: false }),
@@ -115,6 +130,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
     setPatient(p);
     setSurgeries(s || []);
     setFollowUps(f || []);
+    setFollowUpVisits(fv || []);
     setPayments(pay || []);
     setInvestigations(inv || []);
     setVitals(vit || []);
@@ -123,6 +139,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
     const allPaths = [
       ...(s || []).flatMap((s) => [...(s.image_paths || []), ...(s.consent_image_paths || [])]),
       ...(f || []).flatMap((f) => f.report_image_paths || []),
+      ...(inv || []).flatMap((i) => i.attachment_paths || []),
     ];
     const urlMap: Record<string, string> = {};
     for (const path of allPaths) {
@@ -146,7 +163,8 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   // --- Surgery handlers ---
   const resetSurgeryForm = () => {
     setEditingSurgeryId(null);
-    setProcName(''); setSurgeryType(''); setSurgeryRole('done_by_me'); setAnaesthesia(''); setProcNotes('');
+    setProcName(''); setSurgeryType(''); setProcedureCategory(''); setImplants('');
+    setSurgeryRole('done_by_me'); setAnaesthesia(''); setProcNotes('');
     setSurgeryDate(''); setSurgeryImages([]); setExistingSurgeryImages([]);
     setConsentImages([]); setExistingConsentImages([]);
   };
@@ -172,6 +190,8 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
     setEditingSurgeryId(s.id);
     setProcName(s.procedure_name || '');
     setSurgeryType(s.surgery_type || '');
+    setProcedureCategory(s.procedure_category || '');
+    setImplants(s.implants || '');
     setSurgeryRole(s.role === 'assisted_by_me' ? 'assisted_by_me' : 'done_by_me');
     setAnaesthesia(s.anaesthesia_type || '');
     setProcNotes(s.procedure_notes || '');
@@ -198,6 +218,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
     }
     const payload = {
       procedure_name: procName, surgery_type: surgeryType, role: surgeryRole,
+      procedure_category: procedureCategory || null, implants,
       anaesthesia_type: anaesthesia, procedure_notes: procNotes,
       surgery_date: surgeryDate || null, image_paths: imagePaths,
       consent_image_paths: consentPaths,
@@ -219,7 +240,47 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
     load();
   };
 
-  // --- Follow-up handlers ---
+  // --- Follow-up visit handlers (dated notes + repeat prescription) ---
+  const resetVisitForm = () => {
+    setEditingVisitId(null);
+    setVisitDate(new Date().toISOString().split('T')[0]);
+    setVisitNotes(''); setVisitPrescription(DEFAULT_PRESCRIPTION);
+  };
+
+  const openEditVisit = (v: FollowUpVisit) => {
+    setEditingVisitId(v.id);
+    setVisitDate(v.visit_date ? v.visit_date.substring(0, 10) : new Date().toISOString().split('T')[0]);
+    setVisitNotes(v.notes || '');
+    setVisitPrescription(v.prescription_items || DEFAULT_PRESCRIPTION);
+    setShowVisitForm(true);
+  };
+
+  const handleSaveVisit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+    const payload = {
+      visit_date: visitDate || new Date().toISOString().split('T')[0],
+      notes: visitNotes,
+      prescription_items: visitPrescription,
+    };
+    if (editingVisitId) {
+      await supabase.from('follow_up_visits').update(payload).eq('id', editingVisitId);
+    } else {
+      await supabase.from('follow_up_visits').insert({ ...payload, patient_id: patientId });
+      await markPresentFor(visitDate);
+    }
+    setShowVisitForm(false);
+    resetVisitForm();
+    load();
+  };
+
+  const handleDeleteVisit = async (id: string) => {
+    if (!confirm('Delete this follow-up visit?')) return;
+    await supabase.from('follow_up_visits').delete().eq('id', id);
+    load();
+  };
+
+  // --- Follow-up (pathology: FNAC/biopsy) handlers ---
   const resetFollowUpForm = () => {
     setEditingFollowUpId(null);
     setFuType('fnac'); setReportNum(''); setLab(''); setFuYear('');
@@ -255,6 +316,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
       await supabase.from('follow_ups').update(payload).eq('id', editingFollowUpId);
     } else {
       await supabase.from('follow_ups').insert({ ...payload, patient_id: patientId });
+      await markPresentFor(null);
     }
     setShowFollowUpForm(false);
     resetFollowUpForm();
@@ -307,6 +369,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   const resetInvestigationForm = () => {
     setEditingInvestigationId(null);
     setInvName(''); setInvDate(''); setInvValue(''); setInvNotes('');
+    setInvAttachments([]); setExistingInvAttachments([]);
   };
 
   const openEditInvestigation = (inv: Investigation) => {
@@ -315,16 +378,25 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
     setInvDate(inv.investigation_date ? inv.investigation_date.substring(0, 10) : '');
     setInvValue(inv.value);
     setInvNotes(inv.notes || '');
+    setExistingInvAttachments(inv.attachment_paths || []);
+    setInvAttachments([]);
     setShowInvestigationForm(true);
   };
 
   const handleSaveInvestigation = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!user) return;
+    const attachmentPaths = [...existingInvAttachments];
+    for (const file of invAttachments) {
+      const path = await uploadImage(file, user.id, 'investigation');
+      if (path) attachmentPaths.push(path);
+    }
     const payload = {
       investigation_name: invName,
       investigation_date: invDate || null,
       value: invValue,
       notes: invNotes,
+      attachment_paths: attachmentPaths,
     };
     if (editingInvestigationId) {
       await supabase.from('investigations').update(payload).eq('id', editingInvestigationId);
@@ -535,19 +607,30 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
           ) : (
             <div className="space-y-2">
               {investigations.map((inv) => (
-                <div key={inv.id} className="flex items-center justify-between border border-slate-100 rounded-lg p-3 group">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-slate-700">{inv.investigation_name}</span>
-                      {inv.investigation_date && <span className="text-xs text-slate-400">{formatDate(inv.investigation_date)}</span>}
+                <div key={inv.id} className="border border-slate-100 rounded-lg p-3 group">
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-slate-700">{inv.investigation_name}</span>
+                        {inv.investigation_date && <span className="text-xs text-slate-400">{formatDate(inv.investigation_date)}</span>}
+                      </div>
+                      {inv.value && <p className="text-sm text-teal-600 font-medium mt-0.5">Value: {inv.value}</p>}
+                      {inv.notes && <p className="text-xs text-slate-500 mt-0.5">{inv.notes}</p>}
                     </div>
-                    {inv.value && <p className="text-sm text-teal-600 font-medium mt-0.5">Value: {inv.value}</p>}
-                    {inv.notes && <p className="text-xs text-slate-500 mt-0.5">{inv.notes}</p>}
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => openEditInvestigation(inv)} className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-sky-500 transition p-1"><Pencil className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => handleDeleteInvestigation(inv.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition p-1"><Trash2 className="w-3.5 h-3.5" /></button>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1">
-                    <button onClick={() => openEditInvestigation(inv)} className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-sky-500 transition p-1"><Pencil className="w-3.5 h-3.5" /></button>
-                    <button onClick={() => handleDeleteInvestigation(inv.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition p-1"><Trash2 className="w-3.5 h-3.5" /></button>
-                  </div>
+                  {inv.attachment_paths && inv.attachment_paths.length > 0 && (
+                    <div className="flex gap-2 flex-wrap mt-2.5">
+                      {inv.attachment_paths.map((path, i) => imageUrls[path] ? (
+                        <a key={i} href={imageUrls[path]} target="_blank" rel="noopener noreferrer">
+                          <img src={imageUrls[path]} alt={`Attachment ${i + 1}`} className="w-16 h-16 object-cover rounded-lg border border-slate-200 hover:opacity-80 transition" />
+                        </a>
+                      ) : null)}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -565,8 +648,9 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
             <div className="space-y-3">
               {surgeries.map((s) => (
                 <div key={s.id} className="border border-slate-100 rounded-lg p-4 group">
-                  <div className="flex items-center gap-2 mb-2">
+                  <div className="flex items-center gap-2 mb-2 flex-wrap">
                     <span className="text-sm font-medium text-slate-700">{s.procedure_name || 'Untitled procedure'}</span>
+                    {s.procedure_category && <span className="text-xs font-medium bg-violet-50 text-violet-600 px-2 py-0.5 rounded">{s.procedure_category}</span>}
                     {s.surgery_type && <span className="text-xs font-medium bg-sky-50 text-sky-600 px-2 py-0.5 rounded">{s.surgery_type}</span>}
                     <span className={`text-xs font-medium px-2 py-0.5 rounded ${s.role === 'assisted_by_me' ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'}`}>{s.role === 'assisted_by_me' ? 'Assisted' : 'Done by me'}</span>
                     <div className="ml-auto flex items-center gap-1">
@@ -580,6 +664,9 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
                     <div><span className="text-slate-400">Anaesthesia:</span> {s.anaesthesia_type || '—'}</div>
                     <div><span className="text-slate-400">Date:</span> {formatDate(s.surgery_date)}</div>
                   </div>
+                  {s.implants && (
+                    <p className="text-xs text-slate-500 mt-2 flex items-start gap-1.5"><Wrench className="w-3.5 h-3.5 text-slate-400 flex-shrink-0 mt-0.5" /> <span><span className="text-slate-400">Implants:</span> {s.implants}</span></p>
+                  )}
                   {s.procedure_notes && <p className="text-sm text-slate-600 mt-2 whitespace-pre-wrap">{s.procedure_notes}</p>}
                   {s.image_paths && s.image_paths.length > 0 && (
                     <div className="mt-3">
@@ -648,7 +735,35 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
       )}
 
       {activeTab === 'followups' && (
-        <SectionCard icon={FlaskConical} iconColor="text-violet-500" title="Follow-up / Pathology" onAdd={() => { resetFollowUpForm(); setShowFollowUpForm(true); }} addLabel="Add Follow-up">
+        <div className="space-y-6">
+        <SectionCard icon={MessageSquare} iconColor="text-sky-500" title="Follow-up Visits" onAdd={() => { resetVisitForm(); setShowVisitForm(true); }} addLabel="Add Visit">
+          {followUpVisits.length === 0 ? (
+            <p className="text-sm text-slate-400 py-4 text-center">No follow-up visits recorded yet — consultation notes and repeat prescriptions from each visit will appear here.</p>
+          ) : (
+            <div className="space-y-4">
+              {followUpVisits.map((v) => (
+                <div key={v.id} className="border border-slate-100 rounded-lg p-4 group">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-sm font-medium text-slate-700">{formatDate(v.visit_date)}</span>
+                    <div className="ml-auto flex items-center gap-1">
+                      <button onClick={() => openEditVisit(v)} className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-sky-500 transition p-1"><Pencil className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => handleDeleteVisit(v.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition p-1"><Trash2 className="w-3.5 h-3.5" /></button>
+                    </div>
+                  </div>
+                  {v.notes && <p className="text-sm text-slate-600 whitespace-pre-wrap mb-3">{v.notes}</p>}
+                  {v.prescription_items?.rows?.length > 0 && (
+                    <div>
+                      <p className="text-xs text-slate-400 uppercase mb-1.5">Prescription</p>
+                      <PrescriptionTable value={v.prescription_items} onChange={() => { /* read-only in history; edit via the pencil icon above */ }} />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </SectionCard>
+
+        <SectionCard icon={FlaskConical} iconColor="text-violet-500" title="Pathology (FNAC / Biopsy)" onAdd={() => { resetFollowUpForm(); setShowFollowUpForm(true); }} addLabel="Add Report">
           {followUps.length === 0 ? (
             <p className="text-sm text-slate-400 py-4 text-center">No follow-up records yet.</p>
           ) : (
@@ -682,6 +797,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
             </div>
           )}
         </SectionCard>
+        </div>
       )}
 
       {activeTab === 'payments' && (
@@ -718,19 +834,26 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label htmlFor="pd-surgery-type" className="block text-sm font-medium text-slate-600 mb-1.5">Surgery Type</label>
+                <label htmlFor="pd-procedure-category" className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Classification</label>
+                <select id="pd-procedure-category" name="procedureCategory" value={procedureCategory} onChange={(e) => setProcedureCategory(e.target.value as ProcedureCategory | '')} className="form-input bg-white">
+                  <option value="">Select classification...</option>
+                  {PROCEDURE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="pd-surgery-type" className="block text-sm font-medium text-slate-600 mb-1.5">Surgery Type / Technique</label>
                 <select id="pd-surgery-type" name="surgeryType" value={surgeryType} onChange={(e) => setSurgeryType(e.target.value)} className="form-input bg-white">
                   <option value="">Select type...</option>
                   {surgeryTypes.map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
                 </select>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-600 mb-1.5">Role</label>
-                <div className="flex gap-2">
-                  {([['done_by_me','Done by me'],['assisted_by_me','Assisted by me']] as const).map(([val,label]) => (
-                    <button key={val} type="button" onClick={() => setSurgeryRole(val)} className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition ${surgeryRole === val ? 'bg-sky-600 text-white' : 'bg-slate-100 text-slate-500'}`}>{label}</button>
-                  ))}
-                </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-600 mb-1.5">Role</label>
+              <div className="flex gap-2">
+                {([['done_by_me','Done by me'],['assisted_by_me','Assisted by me']] as const).map(([val,label]) => (
+                  <button key={val} type="button" onClick={() => setSurgeryRole(val)} className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition ${surgeryRole === val ? 'bg-sky-600 text-white' : 'bg-slate-100 text-slate-500'}`}>{label}</button>
+                ))}
               </div>
             </div>
             <div>
@@ -742,8 +865,14 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
               <input id="pd-surgery-date" name="surgeryDate" type="date" value={surgeryDate} onChange={(e) => setSurgeryDate(e.target.value)} className="form-input" />
             </div>
             <div>
-              <label htmlFor="pd-proc-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Notes</label>
+              <label htmlFor="pd-proc-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Notes / Intra-op Findings</label>
               <textarea id="pd-proc-notes" name="procNotes" value={procNotes} onChange={(e) => setProcNotes(e.target.value)} rows={4} className="form-input resize-none" />
+            </div>
+            <div>
+              <label htmlFor="pd-implants" className="block text-sm font-medium text-slate-600 mb-1.5 flex items-center gap-1.5">
+                <Wrench className="w-3.5 h-3.5 text-slate-400" /> Implants
+              </label>
+              <input id="pd-implants" name="implants" type="text" value={implants} onChange={(e) => setImplants(e.target.value)} className="form-input" placeholder="e.g. Mesh, plate & screws, prosthesis..." />
             </div>
             {editingSurgeryId && existingSurgeryImages.length > 0 && (
               <div>
@@ -804,7 +933,30 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
         </Modal>
       )}
 
-      {/* Follow-up Form Modal */}
+      {/* Follow-up Visit Form Modal */}
+      {showVisitForm && (
+        <Modal title={editingVisitId ? 'Edit Follow-up Visit' : 'Add Follow-up Visit'} onClose={() => { setShowVisitForm(false); resetVisitForm(); }}>
+          <form onSubmit={handleSaveVisit} className="space-y-4">
+            <div>
+              <label htmlFor="pd-visit-date" className="block text-sm font-medium text-slate-600 mb-1.5">Visit Date *</label>
+              <input id="pd-visit-date" name="visitDate" type="date" required value={visitDate} onChange={(e) => setVisitDate(e.target.value)} className="form-input" />
+            </div>
+            <div>
+              <label htmlFor="pd-visit-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Clinical Notes / Recovery Progress / Observations</label>
+              <textarea id="pd-visit-notes" name="visitNotes" value={visitNotes} onChange={(e) => setVisitNotes(e.target.value)} rows={4} className="form-input resize-none" placeholder="Wound healing, symptoms, examination findings..." />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-600 mb-1.5">Prescription</label>
+              <PrescriptionTable value={visitPrescription} onChange={setVisitPrescription} />
+            </div>
+            <button type="submit" className="w-full py-2.5 bg-sky-600 text-white rounded-lg font-medium hover:bg-sky-700 transition">
+              {editingVisitId ? 'Update Visit' : 'Save Visit'}
+            </button>
+          </form>
+        </Modal>
+      )}
+
+      {/* Follow-up (Pathology) Form Modal */}
       {showFollowUpForm && (
         <Modal title={editingFollowUpId ? 'Edit Follow-up / Pathology' : 'Add Follow-up / Pathology'} onClose={() => { setShowFollowUpForm(false); resetFollowUpForm(); }}>
           <form onSubmit={handleSaveFollowUp} className="space-y-4">
@@ -899,6 +1051,22 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
             <div>
               <label htmlFor="pd-inv-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
               <input id="pd-inv-notes" name="invNotes" type="text" value={invNotes} onChange={(e) => setInvNotes(e.target.value)} className="form-input" placeholder="Optional notes..." />
+            </div>
+            {editingInvestigationId && existingInvAttachments.length > 0 && (
+              <div>
+                <label className="block text-sm font-medium text-slate-600 mb-1.5">Existing Attachments</label>
+                <div className="flex gap-2 flex-wrap mb-2">
+                  {existingInvAttachments.map((path, i) => imageUrls[path] ? (
+                    <img key={i} src={imageUrls[path]} alt={`Existing ${i}`} className="w-16 h-16 object-cover rounded-lg border border-slate-200" />
+                  ) : null)}
+                </div>
+              </div>
+            )}
+            <div>
+              <label htmlFor="pd-inv-attachments" className="block text-sm font-medium text-slate-600 mb-1.5 flex items-center gap-1.5">
+                <Paperclip className="w-3.5 h-3.5 text-slate-400" /> {editingInvestigationId ? 'Add More Attachments' : 'Attachments (lab panels, USG/CT/MRI/X-ray, histology scans...)'}
+              </label>
+              <input id="pd-inv-attachments" name="invAttachments" type="file" multiple accept="image/*" onChange={(e) => setInvAttachments(Array.from(e.target.files || []))} className="w-full text-sm text-slate-500 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-teal-50 file:text-teal-600 hover:file:bg-teal-100" />
             </div>
             <button type="submit" className="w-full py-2.5 bg-teal-600 text-white rounded-lg font-medium hover:bg-teal-700 transition">
               {editingInvestigationId ? 'Update Investigation' : 'Save Investigation'}

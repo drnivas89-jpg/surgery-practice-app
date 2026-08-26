@@ -12,8 +12,11 @@ const MONTHS = [
 ];
 
 const SURGERY_CATEGORIES = ['Major', 'Minor', 'Bedside', 'Endoscopy', 'Others'] as const;
-function categorize(surgeryType: string | null | undefined): typeof SURGERY_CATEGORIES[number] {
-  const t = (surgeryType || '').trim().toLowerCase();
+function categorize(surgery: { procedure_category?: string | null; surgery_type: string | null | undefined }): typeof SURGERY_CATEGORIES[number] {
+  if (surgery.procedure_category && (SURGERY_CATEGORIES as readonly string[]).includes(surgery.procedure_category)) {
+    return surgery.procedure_category as typeof SURGERY_CATEGORIES[number];
+  }
+  const t = (surgery.surgery_type || '').trim().toLowerCase();
   const match = SURGERY_CATEGORIES.find((c) => c.toLowerCase() === t);
   return match || 'Others';
 }
@@ -339,7 +342,7 @@ export default function SurgicalLogbook() {
         doc.setFontSize(big ? 15 : 12);
         doc.setTextColor(...NAVY);
         doc.text(p?.patient_name || 'Unknown patient', margin, y);
-        const category = categorize(r.surgery.surgery_type);
+        const category = categorize(r.surgery);
         const badgeText = category;
         doc.setFontSize(8);
         doc.setTextColor(255, 255, 255);
@@ -360,7 +363,7 @@ export default function SurgicalLogbook() {
       };
 
       sortedRows.forEach((r, rowIndex) => {
-        const category = categorize(r.surgery.surgery_type);
+        const category = categorize(r.surgery);
         const isMajor = category === 'Major';
         const isLastRow = rowIndex === sortedRows.length - 1;
 
