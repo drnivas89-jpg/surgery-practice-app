@@ -1,160 +1,179 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { Hospital, MonthlyEntry, Surgery, Patient, Attendance, ClassEntry, Publication } from '@/lib/types';
+import { Hospital, MonthlyEntry, Surgery, Patient, Attendance, Payment } from '@/lib/types';
 import { formatCurrency, formatDate } from '@/lib/helpers';
-import { FileBarChart, Building2, Calendar, IndianRupee, Activity, Users, Download, FileSpreadsheet, Clock, CheckCircle2, LogOut, Zap, GraduationCap, BookOpen } from 'lucide-react';
+import { getColSummary } from '@/lib/col';
+import { buildHospitalSummaries, HospitalSummary, SURGERY_CATEGORIES } from '@/lib/hospitalSummary';
+import HospitalDailyTable from './HospitalDailyTable';
+import EditDayModal from './EditDayModal';
+import { useAuth } from '@/lib/auth';
+import {
+  Building2, Calendar, IndianRupee, Activity, Users, FileSpreadsheet,
+  Zap, ArrowLeft, FileText,
+} from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { saveAs } from 'file-saver';
+import jsPDF from 'jspdf';
 
-const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const NAVY: [number, number, number] = [30, 41, 59];
+const BORDER: [number, number, number] = [226, 232, 240];
+const MUTED: [number, number, number] = [100, 116, 139];
+
+type Metric = 'census' | 'surgery' | 'leave' | 'col' | 'fees';
+type Level = 'global' | 'metric' | 'hospital';
+
+const METRICS: { id: Metric; label: string; icon: typeof Users; color: string }[] = [
+  { id: 'census', label: 'Census', icon: Users, color: 'text-sky-500' },
+  { id: 'surgery', label: 'Surgery', icon: Activity, color: 'text-violet-500' },
+  { id: 'leave', label: 'Leave', icon: Calendar, color: 'text-red-500' },
+  { id: 'col', label: 'COL', icon: Zap, color: 'text-amber-500' },
+  { id: 'fees', label: 'Fees', icon: IndianRupee, color: 'text-emerald-500' },
+];
+
+// Draws a simple bordered table across as many pages as needed. Deliberately
+// hand-rolled (no autotable plugin) to match the existing Logbook PDF style.
+function drawTablePdf(doc: jsPDF, opts: {
+  title: string; subtitle?: string;
+  columns: { label: string; width: number; align?: 'left' | 'right' }[];
+  rows: (string | number)[][];
+}) {
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 40;
+  let y = margin;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(16);
+  doc.setTextColor(...NAVY);
+  doc.text(opts.title, margin, y);
+  y += 18;
+  if (opts.subtitle) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    doc.setTextColor(...MUTED);
+    doc.text(opts.subtitle, margin, y);
+    y += 16;
+  }
+  doc.setDrawColor(...BORDER);
+  doc.line(margin, y, pageWidth - margin, y);
+  y += 18;
+
+  const drawHeader = () => {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(255, 255, 255);
+    doc.setFillColor(...NAVY);
+    doc.rect(margin, y - 10, opts.columns.reduce((s, c) => s + c.width, 0), 16, 'F');
+    let x = margin;
+    for (const col of opts.columns) {
+      doc.text(col.label, col.align === 'right' ? x + col.width - 4 : x + 4, y, { align: col.align === 'right' ? 'right' : 'left' });
+      x += col.width;
+    }
+    y += 14;
+  };
+
+  drawHeader();
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.setTextColor(...NAVY);
+
+  opts.rows.forEach((row, i) => {
+    if (y > pageHeight - margin) {
+      doc.addPage();
+      y = margin;
+      drawHeader();
+    }
+    if (i % 2 === 1) {
+      doc.setFillColor(248, 250, 252);
+      doc.rect(margin, y - 9, opts.columns.reduce((s, c) => s + c.width, 0), 14, 'F');
+    }
+    let x = margin;
+    row.forEach((cell, ci) => {
+      const col = opts.columns[ci];
+      const text = String(cell);
+      doc.text(text, col.align === 'right' ? x + col.width - 4 : x + 4, y, { align: col.align === 'right' ? 'right' : 'left', maxWidth: col.width - 6 });
+      x += col.width;
+    });
+    y += 14;
+  });
+
+  doc.setDrawColor(...BORDER);
+  doc.rect(margin, margin + (opts.subtitle ? 34 : 18), opts.columns.reduce((s, c) => s + c.width, 0), 0);
+}
+
+function newPdfDoc(): jsPDF {
+  return new jsPDF({ unit: 'pt' });
+}
+
+function savePdf(doc: jsPDF, name: string) {
+  doc.save(`${name}-${new Date().toISOString().substring(0, 10)}.pdf`);
+}
 
 export default function Reports() {
+  const { user } = useAuth();
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
   const [monthlyEntries, setMonthlyEntries] = useState<MonthlyEntry[]>([]);
   const [surgeries, setSurgeries] = useState<Surgery[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [attendance, setAttendance] = useState<Attendance[]>([]);
-  const [classes, setClasses] = useState<ClassEntry[]>([]);
-  const [publications, setPublications] = useState<Publication[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const [hospitalFilter, setHospitalFilter] = useState('all');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const [level, setLevel] = useState<Level>('global');
+  const [selectedMetric, setSelectedMetric] = useState<Metric | null>(null);
+  const [selectedHospitalId, setSelectedHospitalId] = useState<string | null>(null);
+  const [editDayModal, setEditDayModal] = useState<{ hospitalId: string; hospitalName: string; date: string } | null>(null);
+
+  const now = new Date();
+  const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().substring(0, 10);
+  const defaultEnd = now.toISOString().substring(0, 10);
+  const [startDate, setStartDate] = useState(defaultStart);
+  const [endDate, setEndDate] = useState(defaultEnd);
 
   const load = async () => {
-    const [{ data: h }, { data: me }, { data: s }, { data: p }, { data: att }, { data: cls }, { data: pubs }] = await Promise.all([
+    const [{ data: h }, { data: me }, { data: s }, { data: p }, { data: att }, { data: pay }] = await Promise.all([
       supabase.from('hospitals').select('*').order('name'),
       supabase.from('monthly_entries').select('*, hospital:hospitals(*)').order('month', { ascending: false }),
       supabase.from('surgeries').select('*, patient:patients(*)').order('surgery_date', { ascending: false }),
       supabase.from('patients').select('*, hospital:hospitals(*)').order('created_at', { ascending: false }),
       supabase.from('attendance').select('*, hospital:hospitals(*)').order('attendance_date', { ascending: false }),
-      supabase.from('classes').select('*, hospital:hospitals(*)').order('class_date', { ascending: false }),
-      supabase.from('publications').select('*').order('year', { ascending: false }),
+      supabase.from('payments').select('*, patient:patients(*)'),
     ]);
     setHospitals(h || []);
     setMonthlyEntries(me || []);
     setSurgeries(s || []);
     setPatients(p || []);
     setAttendance(att || []);
-    setClasses(cls || []);
-    setPublications(pubs || []);
+    setPayments(pay || []);
     setLoading(false);
   };
 
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); }, []);
 
-  const inDateRange = (dateStr: string | null): boolean => {
-    if (!dateStr) return false;
-    const d = dateStr.substring(0, 10);
-    if (startDate && d < startDate) return false;
-    if (endDate && d > endDate) return false;
-    return true;
-  };
+  const todayStr = now.toISOString().substring(0, 10);
+  const rangeStart = startDate || '2000-01-01';
+  const rangeEnd = endDate || todayStr;
 
-  const inMonthRange = (monthStr: string): boolean => {
-    const d = monthStr.substring(0, 10);
-    if (startDate && d < startDate) return false;
-    if (endDate && d > endDate) return false;
-    return true;
-  };
-
-  const filteredEntries = monthlyEntries.filter((me) => {
-    if (hospitalFilter !== 'all' && me.hospital_id !== hospitalFilter) return false;
-    if (startDate || endDate) {
-      if (!inMonthRange(me.entry_date || me.month)) return false;
-    }
-    return true;
+  const summaries: HospitalSummary[] = buildHospitalSummaries({
+    hospitals, patients, payments, surgeries, monthlyEntries, attendance,
+    rangeStart, rangeEnd, todayStr,
   });
+  const activeSummaries = summaries.filter((hs) => hs.hasActivity);
+  const selectedHospitalSummary = summaries.find((hs) => hs.hospital.id === selectedHospitalId) || null;
 
-  const filteredSurgeries = surgeries.filter((s) => {
-    if (hospitalFilter !== 'all') {
-      const patient = patients.find((p) => p.id === s.patient_id);
-      if (!patient || patient.hospital_id !== hospitalFilter) return false;
-    }
-    if (startDate || endDate) {
-      if (!inDateRange(s.surgery_date)) return false;
-    }
-    return true;
-  });
-
-  const filteredAttendance = attendance.filter((a) => {
-    if (hospitalFilter !== 'all' && a.hospital_id !== hospitalFilter) return false;
-    if (startDate || endDate) {
-      if (!inDateRange(a.attendance_date)) return false;
-    }
-    return true;
-  }).sort((a, b) => a.attendance_date.localeCompare(b.attendance_date));
-
-  const filteredClasses = classes.filter((c) => {
-    if (hospitalFilter !== 'all' && c.hospital_id !== hospitalFilter) return false;
-    if ((startDate || endDate) && c.class_date) {
-      if (!inDateRange(c.class_date)) return false;
-    }
-    return true;
-  });
-
-  const filteredPublications = publications.filter((p) => {
-    if (!startDate && !endDate) return true;
-    if (!p.year) return true;
-    const startYear = startDate ? parseInt(startDate.substring(0, 4)) : null;
-    const endYear = endDate ? parseInt(endDate.substring(0, 4)) : null;
-    if (startYear && p.year < startYear) return false;
-    if (endYear && p.year > endYear) return false;
-    return true;
-  });
-
-  const attPresent = filteredAttendance.filter((a) => a.status === 'present').length;
-  const attLeave = filteredAttendance.filter((a) => a.status === 'leave');
-  const attExtra = filteredAttendance.filter((a) => a.status === 'extra_duty');
-  const leaveTypeCounts: Record<string, number> = {};
-  attLeave.forEach((l) => { const t = l.leave_type || 'Unknown'; leaveTypeCounts[t] = (leaveTypeCounts[t] || 0) + 1; });
-  const extraTypeCounts: Record<string, number> = {};
-  attExtra.forEach((e) => { const t = e.extra_duty_type || 'Unknown'; extraTypeCounts[t] = (extraTypeCounts[t] || 0) + 1; });
-
-  const attendanceByHospital = hospitals.map((h) => {
-    const hospAtt = filteredAttendance.filter((a) => a.hospital_id === h.id);
-    const present = hospAtt.filter((a) => a.status === 'present').length;
-    const leaves = hospAtt.filter((a) => a.status === 'leave');
-    const extras = hospAtt.filter((a) => a.status === 'extra_duty');
-    const lt: Record<string, number> = {};
-    leaves.forEach((l) => { const t = l.leave_type || 'Unknown'; lt[t] = (lt[t] || 0) + 1; });
-    const et: Record<string, number> = {};
-    extras.forEach((e) => { const t = e.extra_duty_type || 'Unknown'; et[t] = (et[t] || 0) + 1; });
-    return { hospital: h, present, leaveCount: leaves.length, extraCount: extras.length, leaveTypes: lt, extraTypes: et };
-  }).filter((a) => a.present > 0 || a.leaveCount > 0 || a.extraCount > 0);
-
-  const filteredPatients = patients.filter((p) => {
-    if (hospitalFilter !== 'all' && p.hospital_id !== hospitalFilter) return false;
-    if (startDate || endDate) {
-      if (!inDateRange(p.admission_date) && !inDateRange(p.surgery_date) && !inDateRange(p.created_at)) return false;
-    }
-    return true;
-  });
-
-  const totalOp = filteredEntries.reduce((s, me) => s + me.op_patients, 0);
-  const totalIp = filteredEntries.reduce((s, me) => s + me.ip_patients, 0);
-  const totalFeesGen = filteredEntries.reduce((s, me) => s + me.fees_generated, 0);
-  const totalFeesRec = filteredEntries.reduce((s, me) => s + me.fees_received, 0);
-
-  // Surgery type breakdown
-  const surgeryTypeCounts: Record<string, number> = {};
-  filteredSurgeries.forEach((s) => {
-    const type = s.surgery_type || 'Unspecified';
-    surgeryTypeCounts[type] = (surgeryTypeCounts[type] || 0) + 1;
-  });
-
-  // Surgery role breakdown
-  const surgeryRoleCounts: Record<string, number> = { 'Done by me': 0, 'Assisted by me': 0 };
-  filteredSurgeries.forEach((s) => {
-    const role = s.role === 'assisted_by_me' ? 'Assisted by me' : 'Done by me';
-    surgeryRoleCounts[role] = (surgeryRoleCounts[role] || 0) + 1;
-  });
-
-  const totalSurgeries = filteredSurgeries.length;
-  const totalPending = totalFeesGen - totalFeesRec;
+  const globalCensus = activeSummaries.reduce((acc, hs) => ({
+    op: acc.op + hs.opCount, ip: acc.ip + hs.ipCount, opinion: acc.opinion + hs.opinionCount,
+  }), { op: 0, ip: 0, opinion: 0 });
+  const globalSurgeryCategories = SURGERY_CATEGORIES.reduce((acc, c) => ({ ...acc, [c]: 0 }), {} as Record<typeof SURGERY_CATEGORIES[number], number>);
+  activeSummaries.forEach((hs) => SURGERY_CATEGORIES.forEach((c) => { globalSurgeryCategories[c] += hs.surgeryCategories[c]; }));
+  const globalLeave = activeSummaries.reduce((acc, hs) => ({
+    cl: acc.cl + hs.leaveBreakdown.cl, col: acc.col + hs.leaveBreakdown.col, other: acc.other + hs.leaveBreakdown.other,
+  }), { cl: 0, col: 0, other: 0 });
+  const globalCol = getColSummary(attendance);
+  const globalFees = activeSummaries.reduce((acc, hs) => ({
+    generated: acc.generated + hs.feesGenerated, received: acc.received + hs.feesReceived, pending: acc.pending + hs.overallPending,
+  }), { generated: 0, received: 0, pending: 0 });
+  const totalSurgeries = activeSummaries.reduce((s, hs) => s + hs.surgeriesCount, 0);
 
   const setQuickRange = (months: number) => {
     const end = new Date();
@@ -164,209 +183,138 @@ export default function Reports() {
     setStartDate(start.toISOString().substring(0, 10));
     setEndDate(end.toISOString().substring(0, 10));
   };
+  const clearFilters = () => { setStartDate(''); setEndDate(''); };
 
-  const clearFilters = () => {
-    setHospitalFilter('all');
-    setStartDate('');
-    setEndDate('');
+  const rangeLabel = startDate || endDate
+    ? `${startDate ? formatDate(startDate) : 'Start'} to ${endDate ? formatDate(endDate) : 'Today'}`
+    : 'All time';
+
+  const openMetric = (m: Metric) => { setSelectedMetric(m); setLevel('metric'); };
+  const openHospitalLevel = (hospitalId: string) => { setSelectedHospitalId(hospitalId); setLevel('hospital'); };
+  const goBack = () => {
+    if (level === 'hospital') { setLevel('metric'); setSelectedHospitalId(null); }
+    else if (level === 'metric') { setLevel('global'); setSelectedMetric(null); }
   };
 
-  const exportCsv = () => {
-    const rows: string[] = [];
-    rows.push('Type,Hospital,Date/Month,OP,IP,Fees Generated,Fees Received,Procedure,Surgery Type,Role');
-
-    filteredEntries.forEach((me) => {
-      rows.push([
-        'Daily Entry',
-        me.hospital?.name || '',
-        new Date(me.entry_date || me.month).toLocaleDateString('en-GB'),
-        me.op_patients,
-        me.ip_patients,
-        me.fees_generated,
-        me.fees_received,
-        '',
-        '',
-        '',
-      ].join(','));
-    });
-
-    filteredSurgeries.forEach((s) => {
-      const patient = patients.find((p) => p.id === s.patient_id);
-      const hospital = hospitals.find((h) => h.id === patient?.hospital_id);
-      rows.push([
-        'Surgery',
-        hospital?.name || '',
-        s.surgery_date || '',
-        '',
-        '',
-        '',
-        '',
-        s.procedure_name,
-        s.surgery_type || '',
-        s.role === 'assisted_by_me' ? 'Assisted by me' : 'Done by me',
-      ].join(','));
-    });
-
-    filteredAttendance.forEach((a) => {
-      rows.push([
-        'Attendance',
-        a.hospital?.name || '',
-        a.attendance_date,
-        '',
-        '',
-        '',
-        '',
-        '',
-        a.status,
-        a.leave_type || a.extra_duty_type || '',
-      ].join(','));
-    });
-
-    const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `report-${new Date().toISOString().substring(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const handleDeleteDay = async (hospitalId: string, date: string) => {
+    if (!confirm(`Delete all daily-entry and attendance records for ${formatDate(date)}? This cannot be undone.`)) return;
+    await Promise.all([
+      supabase.from('monthly_entries').delete().eq('hospital_id', hospitalId).eq('entry_date', date),
+      supabase.from('attendance').delete().eq('hospital_id', hospitalId).eq('attendance_date', date),
+    ]);
+    load();
   };
 
+  // ---- Excel export (adapts scope to the current level) ----
   const exportExcel = () => {
     const wb = XLSX.utils.book_new();
-    const rangeLabel = startDate || endDate ? `${startDate || 'Start'} to ${endDate || 'Today'}` : 'All time';
-    const hospitalLabel = hospitalFilter === 'all' ? 'All Hospitals' : (hospitals.find((h) => h.id === hospitalFilter)?.name || 'All Hospitals');
+    const scopeLabel = level === 'hospital' ? selectedHospitalSummary?.hospital.name
+      : level === 'metric' ? `${METRICS.find((m) => m.id === selectedMetric)?.label} — All Hospitals`
+      : 'Global Summary';
 
-    // --- Summary sheet ---
     const summaryRows = [
-      ['Surgical Practice Report'],
-      ['Generated', new Date().toLocaleString('en-GB')],
-      ['Hospital', hospitalLabel],
-      ['Date Range', rangeLabel],
-      [],
+      ['Surgical Practice Report'], ['Scope', scopeLabel || ''], ['Generated', new Date().toLocaleString('en-GB')], ['Date Range', rangeLabel], [],
       ['Metric', 'Value'],
-      ['Total OP Patients', totalOp],
-      ['Total IP Patients', totalIp],
-      ['Total Surgeries', totalSurgeries],
-      ['Fees Generated', totalFeesGen],
-      ['Fees Received', totalFeesRec],
-      ['Pending', totalPending],
-      ['Days Present', attPresent],
-      ['Days on Leave', attLeave.length],
-      ['Extra Duty Days', attExtra.length],
-      [],
-      ['Surgery Type', 'Count'],
-      ...Object.entries(surgeryTypeCounts).map(([type, count]) => [type, count]),
-      [],
-      ['Surgery Role', 'Count'],
-      ...Object.entries(surgeryRoleCounts).map(([role, count]) => [role, count]),
+      ['OP', globalCensus.op], ['IP', globalCensus.ip], ['Opinion', globalCensus.opinion],
+      ['Surgeries', totalSurgeries],
+      ['Leave — CL', globalLeave.cl], ['Leave — COL', globalLeave.col], ['Leave — Other', globalLeave.other],
+      ['COL Accrued', globalCol.accrued], ['COL Redeemed', globalCol.redeemed], ['COL Available', globalCol.available],
+      ['Fees Generated', globalFees.generated], ['Fees Received', globalFees.received], ['Fees Pending', globalFees.pending],
     ];
-    const summarySheet = XLSX.utils.aoa_to_sheet(summaryRows);
-    summarySheet['!cols'] = [{ wch: 24 }, { wch: 20 }];
-    XLSX.utils.book_append_sheet(wb, summarySheet, 'Summary');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summaryRows), 'Summary');
 
-    // --- Hospital-wise sheet ---
     const hospitalRows = [
-      ['Hospital', 'OP', 'IP', 'Surgeries', 'Fees Generated', 'Fees Received', 'Pending', 'Present', 'Leave', 'Extra Duty'],
-      ...hospitals.map((h) => {
-        const hEntries = filteredEntries.filter((me) => me.hospital_id === h.id);
-        const hOp = hEntries.reduce((s, me) => s + me.op_patients, 0);
-        const hIp = hEntries.reduce((s, me) => s + me.ip_patients, 0);
-        const hFeesGen = hEntries.reduce((s, me) => s + me.fees_generated, 0);
-        const hFeesRec = hEntries.reduce((s, me) => s + me.fees_received, 0);
-        const hSurgeries = filteredSurgeries.filter((s) => {
-          const patient = patients.find((p) => p.id === s.patient_id);
-          return patient?.hospital_id === h.id;
-        }).length;
-        const hAtt = attendanceByHospital.find((a) => a.hospital.id === h.id);
-        return [
-          h.name, hOp, hIp, hSurgeries, hFeesGen, hFeesRec, hFeesGen - hFeesRec,
-          hAtt?.present || 0, hAtt?.leaveCount || 0, hAtt?.extraCount || 0,
-        ];
-      }),
+      ['Hospital', 'OP', 'IP', 'Opinion', 'Surgeries', 'Present', 'Duties', 'CL', 'COL', 'Other Leave', 'COL Accrued', 'COL Available', 'Fees Generated', 'Fees Received', 'Pending'],
+      ...activeSummaries.map((hs) => [
+        hs.hospital.name, hs.opCount, hs.ipCount, hs.opinionCount, hs.surgeriesCount, hs.present, hs.dutyCount,
+        hs.leaveBreakdown.cl, hs.leaveBreakdown.col, hs.leaveBreakdown.other, hs.colAccrued, hs.colAvailable,
+        hs.feesGenerated, hs.feesReceived, hs.overallPending,
+      ]),
     ];
     const hospitalSheet = XLSX.utils.aoa_to_sheet(hospitalRows);
-    hospitalSheet['!cols'] = Array(10).fill({ wch: 14 });
+    hospitalSheet['!cols'] = Array(15).fill({ wch: 13 });
     XLSX.utils.book_append_sheet(wb, hospitalSheet, 'Hospital-wise');
 
-    // --- Daily Entries sheet ---
-    const entryRows = [
-      ['Date', 'Hospital', 'OP', 'IP', 'Opinion', 'Fees Generated', 'Fees Received', 'Pending', 'Notes'],
-      ...filteredEntries.map((me) => [
-        formatDate(me.entry_date || me.month), me.hospital?.name || '', me.op_patients, me.ip_patients,
-        me.opinion_patients, me.fees_generated, me.fees_received, me.fees_generated - me.fees_received, me.notes || '',
-      ]),
-    ];
-    const entrySheet = XLSX.utils.aoa_to_sheet(entryRows);
-    entrySheet['!cols'] = [{ wch: 12 }, { wch: 20 }, { wch: 8 }, { wch: 8 }, { wch: 10 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 24 }];
-    XLSX.utils.book_append_sheet(wb, entrySheet, 'Daily Entries');
-
-    // --- Surgeries sheet ---
-    const surgeryRows = [
-      ['Date', 'Hospital', 'Patient', 'Unique ID', 'Procedure', 'Surgery Type', 'Anaesthesia', 'Role'],
-      ...filteredSurgeries.map((s) => {
-        const patient = patients.find((p) => p.id === s.patient_id);
-        const hospital = hospitals.find((h) => h.id === patient?.hospital_id);
-        return [
-          formatDate(s.surgery_date), hospital?.name || '', patient?.patient_name || '', patient?.unique_id || '',
-          s.procedure_name, s.surgery_type || '', s.anaesthesia_type || '',
-          s.role === 'assisted_by_me' ? 'Assisted by me' : 'Done by me',
-        ];
-      }),
-    ];
-    const surgerySheet = XLSX.utils.aoa_to_sheet(surgeryRows);
-    surgerySheet['!cols'] = [{ wch: 12 }, { wch: 20 }, { wch: 20 }, { wch: 14 }, { wch: 26 }, { wch: 18 }, { wch: 16 }, { wch: 16 }];
-    XLSX.utils.book_append_sheet(wb, surgerySheet, 'Surgeries');
-
-    // --- Patients sheet ---
-    const patientRows = [
-      ['Unique ID', 'Name', 'Hospital', 'Type', 'Age', 'Sex', 'Mobile', 'Diagnosis', 'Fees', 'Admission', 'Discharge', 'Surgery Date', 'Follow-up'],
-      ...filteredPatients.map((p) => [
-        p.unique_id, p.patient_name, p.hospital?.name || '', p.patient_type || '', p.age ?? '', p.sex || '',
-        p.mobile_number || '', p.diagnosis || '', p.fees || 0, p.admission_date || '', p.discharge_date || '',
-        p.surgery_date || '', p.follow_up_date || '',
-      ]),
-    ];
-    const patientSheet = XLSX.utils.aoa_to_sheet(patientRows);
-    patientSheet['!cols'] = Array(13).fill({ wch: 14 });
-    XLSX.utils.book_append_sheet(wb, patientSheet, 'Patients');
-
-    // --- Attendance sheet ---
-    const attendanceRows = [
-      ['Date', 'Hospital', 'Status', 'Type', 'Notes'],
-      ...filteredAttendance.map((a) => [
-        formatDate(a.attendance_date), a.hospital?.name || '', a.status, a.leave_type || a.extra_duty_type || '', a.notes || '',
-      ]),
-    ];
-    const attendanceSheet = XLSX.utils.aoa_to_sheet(attendanceRows);
-    attendanceSheet['!cols'] = [{ wch: 12 }, { wch: 20 }, { wch: 12 }, { wch: 16 }, { wch: 24 }];
-    XLSX.utils.book_append_sheet(wb, attendanceSheet, 'Attendance');
-
-    // --- Classes sheet ---
-    const classRows = [
-      ['Date', 'Hospital', 'Type', 'Audience', 'Topic', 'Notes'],
-      ...filteredClasses.map((c) => [
-        formatDate(c.class_date), c.hospital?.name || '', c.class_type || '', c.audience || '', c.topic || '', c.notes || '',
-      ]),
-    ];
-    const classSheet = XLSX.utils.aoa_to_sheet(classRows);
-    classSheet['!cols'] = [{ wch: 12 }, { wch: 20 }, { wch: 16 }, { wch: 20 }, { wch: 26 }, { wch: 24 }];
-    XLSX.utils.book_append_sheet(wb, classSheet, 'Classes');
-
-    // --- Publications sheet ---
-    const pubRows = [
-      ['Type', 'Topic', 'Authors', 'Month', 'Year', 'Platform', 'Notes'],
-      ...filteredPublications.map((p) => [
-        p.publication_type || '', p.topic || '', p.author_details || '',
-        p.month ? MONTH_NAMES[p.month - 1] : '', p.year || '', p.platform || '', p.notes || '',
-      ]),
-    ];
-    const pubSheet = XLSX.utils.aoa_to_sheet(pubRows);
-    pubSheet['!cols'] = [{ wch: 14 }, { wch: 26 }, { wch: 22 }, { wch: 12 }, { wch: 8 }, { wch: 22 }, { wch: 24 }];
-    XLSX.utils.book_append_sheet(wb, pubSheet, 'Publications');
+    if (level === 'hospital' && selectedHospitalSummary) {
+      const dateRows = [
+        ['Date', 'Attendance', 'OP', 'IP', 'Opinion', 'Surgeries', 'Fees Generated', 'Fees Received', 'Pending'],
+        ...selectedHospitalSummary.days.map((d) => [
+          formatDate(d.date), d.attendanceStatusLabel || 'No Entry', d.opCount, d.ipCount, d.opinionCount,
+          d.surgeriesCount, d.feesGenerated, d.feesReceived, d.pendingFees,
+        ]),
+      ];
+      const dateSheet = XLSX.utils.aoa_to_sheet(dateRows);
+      dateSheet['!cols'] = Array(9).fill({ wch: 14 });
+      XLSX.utils.book_append_sheet(wb, dateSheet, 'Date-wise');
+    }
 
     const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-    const blob2 = new Blob([wbout], { type: 'application/octet-stream' });
-    saveAs(blob2, `surgical-report-${new Date().toISOString().substring(0, 10)}.xlsx`);
+    saveAs(new Blob([wbout], { type: 'application/octet-stream' }), `report-${level}-${new Date().toISOString().substring(0, 10)}.xlsx`);
+  };
+
+  // ---- PDF export (adapts scope to the current level) ----
+  const exportPdf = () => {
+    const doc = newPdfDoc();
+    if (level === 'hospital' && selectedHospitalSummary) {
+      drawTablePdf(doc, {
+        title: `Date-wise Report — ${selectedHospitalSummary.hospital.name}`,
+        subtitle: rangeLabel,
+        columns: [
+          { label: 'Date', width: 70 }, { label: 'Attendance', width: 80 },
+          { label: 'OP', width: 30, align: 'right' }, { label: 'IP', width: 30, align: 'right' }, { label: 'Opinion', width: 45, align: 'right' },
+          { label: 'Surgeries', width: 50, align: 'right' }, { label: 'Fees Gen.', width: 65, align: 'right' },
+          { label: 'Fees Rec.', width: 65, align: 'right' }, { label: 'Pending', width: 65, align: 'right' },
+        ],
+        rows: selectedHospitalSummary.days.map((d) => [
+          formatDate(d.date), d.attendanceStatusLabel || 'No Entry', d.opCount, d.ipCount, d.opinionCount,
+          d.surgeriesCount, formatCurrency(d.feesGenerated), formatCurrency(d.feesReceived), formatCurrency(d.pendingFees),
+        ]),
+      });
+      savePdf(doc, `report-${selectedHospitalSummary.hospital.name.replace(/\s+/g, '-').toLowerCase()}`);
+      return;
+    }
+
+    if (level === 'metric' && selectedMetric) {
+      const metricLabel = METRICS.find((m) => m.id === selectedMetric)?.label || '';
+      const columns = selectedMetric === 'census'
+        ? [{ label: 'Hospital', width: 150 }, { label: 'OP', width: 60, align: 'right' as const }, { label: 'IP', width: 60, align: 'right' as const }, { label: 'Opinion', width: 60, align: 'right' as const }]
+        : selectedMetric === 'surgery'
+        ? [{ label: 'Hospital', width: 130 }, ...SURGERY_CATEGORIES.map((c) => ({ label: c, width: 55, align: 'right' as const }))]
+        : selectedMetric === 'leave'
+        ? [{ label: 'Hospital', width: 150 }, { label: 'CL', width: 60, align: 'right' as const }, { label: 'COL', width: 60, align: 'right' as const }, { label: 'Other', width: 60, align: 'right' as const }]
+        : selectedMetric === 'col'
+        ? [{ label: 'Hospital', width: 150 }, { label: 'Accrued', width: 70, align: 'right' as const }, { label: 'Redeemed', width: 70, align: 'right' as const }, { label: 'Available', width: 70, align: 'right' as const }]
+        : [{ label: 'Hospital', width: 130 }, { label: 'Generated', width: 80, align: 'right' as const }, { label: 'Received', width: 80, align: 'right' as const }, { label: 'Pending', width: 80, align: 'right' as const }];
+      const rows = activeSummaries.map((hs) => selectedMetric === 'census'
+        ? [hs.hospital.name, hs.opCount, hs.ipCount, hs.opinionCount]
+        : selectedMetric === 'surgery'
+        ? [hs.hospital.name, ...SURGERY_CATEGORIES.map((c) => hs.surgeryCategories[c])]
+        : selectedMetric === 'leave'
+        ? [hs.hospital.name, hs.leaveBreakdown.cl, hs.leaveBreakdown.col, hs.leaveBreakdown.other]
+        : selectedMetric === 'col'
+        ? [hs.hospital.name, hs.colAccrued, hs.colRedeemed, hs.colAvailable]
+        : [hs.hospital.name, formatCurrency(hs.feesGenerated), formatCurrency(hs.feesReceived), formatCurrency(hs.overallPending)]
+      );
+      drawTablePdf(doc, { title: `${metricLabel} — Hospital-wise`, subtitle: rangeLabel, columns, rows });
+      savePdf(doc, `report-${selectedMetric}`);
+      return;
+    }
+
+    drawTablePdf(doc, {
+      title: 'Surgical Practice Report — Global Summary',
+      subtitle: rangeLabel,
+      columns: [
+        { label: 'Hospital', width: 110 }, { label: 'OP', width: 35, align: 'right' }, { label: 'IP', width: 35, align: 'right' }, { label: 'Opinion', width: 50, align: 'right' },
+        { label: 'Surgeries', width: 55, align: 'right' }, { label: 'CL/COL/Other', width: 80, align: 'right' },
+        { label: 'Fees Gen.', width: 65, align: 'right' }, { label: 'Fees Rec.', width: 65, align: 'right' }, { label: 'Pending', width: 65, align: 'right' },
+      ],
+      rows: activeSummaries.map((hs) => [
+        hs.hospital.name, hs.opCount, hs.ipCount, hs.opinionCount, hs.surgeriesCount,
+        `${hs.leaveBreakdown.cl}/${hs.leaveBreakdown.col}/${hs.leaveBreakdown.other}`,
+        formatCurrency(hs.feesGenerated), formatCurrency(hs.feesReceived), formatCurrency(hs.overallPending),
+      ]),
+    });
+    savePdf(doc, 'report-global-summary');
   };
 
   if (loading) {
@@ -379,62 +327,42 @@ export default function Reports() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800">Reports</h1>
-          <p className="text-slate-500 text-sm mt-0.5">Generate reports by hospital and date range</p>
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-3">
+          {level !== 'global' && (
+            <button onClick={goBack} className="p-2 rounded-lg hover:bg-slate-100 transition">
+              <ArrowLeft className="w-5 h-5 text-slate-500" />
+            </button>
+          )}
+          <div>
+            <h1 className="text-2xl font-bold text-slate-800">
+              {level === 'global' ? 'Reports' : level === 'metric' ? METRICS.find((m) => m.id === selectedMetric)?.label : selectedHospitalSummary?.hospital.name || 'Hospital'}
+            </h1>
+            <p className="text-slate-500 text-sm mt-0.5">
+              {level === 'global' ? 'Global summary — click a card to drill into hospitals, then a hospital for the date-wise log' : level === 'metric' ? 'Hospital-wise breakdown' : `Date-wise report — ${rangeLabel}`}
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={exportCsv}
-            className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-600 rounded-lg text-sm font-medium hover:bg-slate-50 transition shadow-sm"
-          >
-            <Download className="w-4 h-4" />
-            Export CSV
+          <button onClick={exportExcel} className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 transition shadow-sm">
+            <FileSpreadsheet className="w-4 h-4" /> Excel
           </button>
-          <button
-            onClick={exportExcel}
-            className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 transition shadow-sm"
-          >
-            <FileSpreadsheet className="w-4 h-4" />
-            Export Excel
+          <button onClick={exportPdf} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-600 rounded-lg text-sm font-medium hover:bg-slate-50 transition shadow-sm">
+            <FileText className="w-4 h-4" /> PDF
           </button>
         </div>
       </div>
 
-      {/* Filters */}
+      {/* Date range filter — applies across all 3 levels */}
       <div className="bg-white rounded-xl border border-slate-200 p-4">
         <div className="flex flex-wrap items-end gap-3">
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">Hospital</label>
-            <select
-              value={hospitalFilter}
-              onChange={(e) => setHospitalFilter(e.target.value)}
-              className="px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none"
-            >
-              <option value="all">All Hospitals</option>
-              {hospitals.map((h) => (
-                <option key={h.id} value={h.id}>{h.name}</option>
-              ))}
-            </select>
-          </div>
-          <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">From Date</label>
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="px-3 py-2 rounded-lg border border-slate-200 text-sm focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none"
-            />
+            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="px-3 py-2 rounded-lg border border-slate-200 text-sm focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" />
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">To Date</label>
-            <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="px-3 py-2 rounded-lg border border-slate-200 text-sm focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none"
-            />
+            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="px-3 py-2 rounded-lg border border-slate-200 text-sm focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" />
           </div>
           <div className="flex gap-1.5">
             <button onClick={() => setQuickRange(1)} className="px-3 py-2 text-xs font-medium rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition">This Month</button>
@@ -442,318 +370,129 @@ export default function Reports() {
             <button onClick={() => setQuickRange(6)} className="px-3 py-2 text-xs font-medium rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition">6 Months</button>
             <button onClick={() => setQuickRange(12)} className="px-3 py-2 text-xs font-medium rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition">1 Year</button>
           </div>
-          <button onClick={clearFilters} className="px-3 py-2 text-xs font-medium rounded-lg text-slate-500 hover:bg-slate-100 transition">Clear</button>
+          <button onClick={clearFilters} className="px-3 py-2 text-xs font-medium rounded-lg text-slate-500 hover:bg-slate-100 transition">All Time</button>
         </div>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-        <StatCard label="OP Patients" value={totalOp} icon={Users} color="sky" />
-        <StatCard label="IP Patients" value={totalIp} icon={Activity} color="emerald" />
-        <StatCard label="Surgeries" value={totalSurgeries} icon={Activity} color="violet" />
-        <StatCard label="Fees Generated" value={formatCurrency(totalFeesGen)} icon={IndianRupee} color="amber" />
-        <StatCard label="Fees Received" value={formatCurrency(totalFeesRec)} icon={IndianRupee} color="emerald" />
-        <StatCard label="Pending" value={formatCurrency(totalPending)} icon={IndianRupee} color="red" />
-        <StatCard label="Classes Given" value={filteredClasses.length} icon={GraduationCap} color="violet" />
-        <StatCard label="Publications" value={filteredPublications.length} icon={BookOpen} color="sky" />
-      </div>
-
-      {/* Surgery Type Breakdown */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <FileBarChart className="w-4 h-4 text-violet-500" />
-          <h2 className="font-semibold text-slate-700">Surgery Type Breakdown</h2>
-        </div>
-        {Object.keys(surgeryTypeCounts).length === 0 ? (
-          <p className="text-sm text-slate-400 py-4 text-center">No surgeries found for the selected filters.</p>
-        ) : (
-          <div className="space-y-2">
-            {Object.entries(surgeryTypeCounts).sort((a, b) => b[1] - a[1]).map(([type, count]) => {
-              const pct = totalSurgeries > 0 ? (count / totalSurgeries) * 100 : 0;
-              return (
-                <div key={type} className="flex items-center gap-3">
-                  <span className="text-sm font-medium text-slate-600 w-32 truncate">{type}</span>
-                  <div className="flex-1 h-6 bg-slate-100 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-violet-500 rounded-full transition-all flex items-center justify-end pr-2"
-                      style={{ width: `${Math.max(pct, 8)}%` }}
-                    >
-                      <span className="text-xs text-white font-medium">{count}</span>
-                    </div>
+      {/* Level 1: Global summary cards */}
+      {level === 'global' && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {METRICS.map((m) => {
+            const Icon = m.icon;
+            return (
+              <button key={m.id} onClick={() => openMetric(m.id)} className="bg-white rounded-xl border border-slate-200 p-5 text-left hover:border-sky-300 hover:shadow-sm transition">
+                <div className="flex items-center gap-2 mb-3"><Icon className={`w-4 h-4 ${m.color}`} /><h2 className="font-semibold text-slate-700">{m.label}</h2></div>
+                {m.id === 'census' && (
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div><p className="text-xl font-bold text-sky-700">{globalCensus.op}</p><p className="text-[11px] text-slate-400">OP</p></div>
+                    <div><p className="text-xl font-bold text-violet-700">{globalCensus.ip}</p><p className="text-[11px] text-slate-400">IP</p></div>
+                    <div><p className="text-xl font-bold text-amber-700">{globalCensus.opinion}</p><p className="text-[11px] text-slate-400">Opinion</p></div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Surgery Role Breakdown */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <Activity className="w-4 h-4 text-emerald-500" />
-          <h2 className="font-semibold text-slate-700">Surgery Role Breakdown</h2>
-        </div>
-        {totalSurgeries === 0 ? (
-          <p className="text-sm text-slate-400 py-4 text-center">No surgeries found for the selected filters.</p>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {Object.entries(surgeryRoleCounts).map(([role, count]) => {
-              const pct = totalSurgeries > 0 ? (count / totalSurgeries) * 100 : 0;
-              const isDone = role === 'Done by me';
-              return (
-                <div key={role} className="p-4 rounded-lg border border-slate-100">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium text-slate-600">{role}</span>
-                    <span className="text-lg font-bold text-slate-800">{count}</span>
+                )}
+                {m.id === 'surgery' && (
+                  <div className="grid grid-cols-5 gap-1 text-center">
+                    {SURGERY_CATEGORIES.map((c) => (
+                      <div key={c}><p className="text-lg font-bold text-slate-800">{globalSurgeryCategories[c]}</p><p className="text-[9px] text-slate-400">{c}</p></div>
+                    ))}
                   </div>
-                  <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                    <div className={`h-full rounded-full transition-all ${isDone ? 'bg-emerald-500' : 'bg-amber-500'}`} style={{ width: `${Math.max(pct, 3)}%` }} />
+                )}
+                {m.id === 'leave' && (
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div><p className="text-xl font-bold text-red-700">{globalLeave.cl}</p><p className="text-[11px] text-slate-400">CL</p></div>
+                    <div><p className="text-xl font-bold text-amber-700">{globalLeave.col}</p><p className="text-[11px] text-slate-400">COL</p></div>
+                    <div><p className="text-xl font-bold text-slate-600">{globalLeave.other}</p><p className="text-[11px] text-slate-400">Other</p></div>
                   </div>
-                  <p className="text-xs text-slate-400 mt-1.5">{pct.toFixed(0)}% of total</p>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Monthly Entries Detail */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <Calendar className="w-4 h-4 text-emerald-500" />
-          <h2 className="font-semibold text-slate-700">Daily Entries</h2>
+                )}
+                {m.id === 'col' && (
+                  <div className="grid grid-cols-2 gap-2 text-center">
+                    <div><p className="text-xl font-bold text-amber-700">{globalCol.accrued}</p><p className="text-[11px] text-slate-400">Earned</p></div>
+                    <div><p className="text-xl font-bold text-slate-600">{globalCol.redeemed}</p><p className="text-[11px] text-slate-400">Used</p></div>
+                  </div>
+                )}
+                {m.id === 'fees' && (
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div><p className="text-sm font-bold text-slate-700">{formatCurrency(globalFees.generated)}</p><p className="text-[11px] text-slate-400">Generated</p></div>
+                    <div><p className="text-sm font-bold text-emerald-600">{formatCurrency(globalFees.received)}</p><p className="text-[11px] text-slate-400">Received</p></div>
+                    <div><p className={`text-sm font-bold ${globalFees.pending > 0 ? 'text-red-600' : 'text-slate-500'}`}>{formatCurrency(globalFees.pending)}</p><p className="text-[11px] text-slate-400">Pending</p></div>
+                  </div>
+                )}
+              </button>
+            );
+          })}
         </div>
-        {filteredEntries.length === 0 ? (
-          <p className="text-sm text-slate-400 py-4 text-center">No daily entries found for the selected filters.</p>
+      )}
+
+      {/* Level 2: Hospital-wise cards for the selected metric */}
+      {level === 'metric' && (
+        activeSummaries.length === 0 ? (
+          <p className="text-sm text-slate-400 py-8 text-center">No hospital activity in this range.</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-100 text-left text-xs text-slate-500 uppercase tracking-wide">
-                  <th className="px-3 py-2 font-medium">Date</th>
-                  <th className="px-3 py-2 font-medium">Hospital</th>
-                  <th className="px-3 py-2 font-medium">OP</th>
-                  <th className="px-3 py-2 font-medium">IP</th>
-                  <th className="px-3 py-2 font-medium">Fees Gen.</th>
-                  <th className="px-3 py-2 font-medium">Fees Rec.</th>
-                  <th className="px-3 py-2 font-medium">Pending</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredEntries.map((me) => {
-                  const pending = me.fees_generated - me.fees_received;
-                  return (
-                    <tr key={me.id} className="border-b border-slate-50">
-                      <td className="px-3 py-2.5 text-slate-600">
-                        {formatDate(me.entry_date || me.month)}
-                      </td>
-                      <td className="px-3 py-2.5 font-medium text-slate-700">{me.hospital?.name || '—'}</td>
-                      <td className="px-3 py-2.5 text-slate-600">{me.op_patients}</td>
-                      <td className="px-3 py-2.5 text-slate-600">{me.ip_patients}</td>
-                      <td className="px-3 py-2.5 text-slate-600">{formatCurrency(me.fees_generated)}</td>
-                      <td className="px-3 py-2.5 text-emerald-600 font-medium">{formatCurrency(me.fees_received)}</td>
-                      <td className={`px-3 py-2.5 font-medium ${pending > 0 ? 'text-red-600' : 'text-slate-400'}`}>
-                        {formatCurrency(pending)}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {activeSummaries.map((hs) => (
+              <button key={hs.hospital.id} onClick={() => openHospitalLevel(hs.hospital.id)} className="bg-white rounded-xl border border-slate-200 p-5 text-left hover:border-sky-300 hover:shadow-sm transition space-y-3">
+                <div className="flex items-center gap-2"><Building2 className="w-4 h-4 text-slate-400" /><h2 className="font-semibold text-slate-800">{hs.hospital.name}</h2></div>
+                {selectedMetric === 'census' && (
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div><p className="text-lg font-bold text-sky-700">{hs.opCount}</p><p className="text-[10px] text-slate-400">OP</p></div>
+                    <div><p className="text-lg font-bold text-violet-700">{hs.ipCount}</p><p className="text-[10px] text-slate-400">IP</p></div>
+                    <div><p className="text-lg font-bold text-amber-700">{hs.opinionCount}</p><p className="text-[10px] text-slate-400">Opinion</p></div>
+                  </div>
+                )}
+                {selectedMetric === 'surgery' && (
+                  <div className="grid grid-cols-5 gap-1 text-center">
+                    {SURGERY_CATEGORIES.map((c) => (
+                      <div key={c}><p className="text-sm font-bold text-slate-700">{hs.surgeryCategories[c]}</p><p className="text-[8px] text-slate-400">{c}</p></div>
+                    ))}
+                  </div>
+                )}
+                {selectedMetric === 'leave' && (
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div><p className="text-lg font-bold text-red-700">{hs.leaveBreakdown.cl}</p><p className="text-[10px] text-slate-400">CL</p></div>
+                    <div><p className="text-lg font-bold text-amber-700">{hs.leaveBreakdown.col}</p><p className="text-[10px] text-slate-400">COL</p></div>
+                    <div><p className="text-lg font-bold text-slate-600">{hs.leaveBreakdown.other}</p><p className="text-[10px] text-slate-400">Other</p></div>
+                  </div>
+                )}
+                {selectedMetric === 'col' && (
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div><p className="text-lg font-bold text-amber-700">{hs.colAccrued}</p><p className="text-[10px] text-slate-400">Accrued</p></div>
+                    <div><p className="text-lg font-bold text-slate-600">{hs.colRedeemed}</p><p className="text-[10px] text-slate-400">Redeemed</p></div>
+                    <div><p className="text-lg font-bold text-emerald-600">{hs.colAvailable}</p><p className="text-[10px] text-slate-400">Available</p></div>
+                  </div>
+                )}
+                {selectedMetric === 'fees' && (
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div><p className="text-sm font-bold text-slate-700">{formatCurrency(hs.feesGenerated)}</p><p className="text-[9px] text-slate-400">Generated</p></div>
+                    <div><p className="text-sm font-bold text-emerald-600">{formatCurrency(hs.feesReceived)}</p><p className="text-[9px] text-slate-400">Received</p></div>
+                    <div><p className={`text-sm font-bold ${hs.overallPending > 0 ? 'text-red-600' : 'text-slate-500'}`}>{formatCurrency(hs.overallPending)}</p><p className="text-[9px] text-slate-400">Pending</p></div>
+                  </div>
+                )}
+              </button>
+            ))}
           </div>
-        )}
-      </div>
+        )
+      )}
 
-      {/* Surgery List */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <Activity className="w-4 h-4 text-sky-500" />
-          <h2 className="font-semibold text-slate-700">Surgeries in Range</h2>
-        </div>
-        {filteredSurgeries.length === 0 ? (
-          <p className="text-sm text-slate-400 py-4 text-center">No surgeries found for the selected filters.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-100 text-left text-xs text-slate-500 uppercase tracking-wide">
-                  <th className="px-3 py-2 font-medium">Date</th>
-                  <th className="px-3 py-2 font-medium">Patient</th>
-                  <th className="px-3 py-2 font-medium">Hospital</th>
-                  <th className="px-3 py-2 font-medium">Procedure</th>
-                  <th className="px-3 py-2 font-medium">Type</th>
-                  <th className="px-3 py-2 font-medium">Role</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredSurgeries.map((s) => {
-                  const patient = patients.find((p) => p.id === s.patient_id);
-                  const hospital = hospitals.find((h) => h.id === patient?.hospital_id);
-                  return (
-                    <tr key={s.id} className="border-b border-slate-50">
-                      <td className="px-3 py-2.5 text-slate-600">{formatDate(s.surgery_date)}</td>
-                      <td className="px-3 py-2.5 font-medium text-slate-700">{patient?.patient_name || '—'}</td>
-                      <td className="px-3 py-2.5 text-slate-500">{hospital?.name || '—'}</td>
-                      <td className="px-3 py-2.5 text-slate-600">{s.procedure_name || '—'}</td>
-                      <td className="px-3 py-2.5">
-                        {s.surgery_type ? (
-                          <span className="text-xs font-medium bg-sky-50 text-sky-600 px-2 py-0.5 rounded">{s.surgery_type}</span>
-                        ) : '—'}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <span className={`text-xs font-medium px-2 py-0.5 rounded ${s.role === 'assisted_by_me' ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'}`}>{s.role === 'assisted_by_me' ? 'Assisted' : 'Done by me'}</span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      {/* Level 3: Date-wise table for the selected hospital */}
+      {level === 'hospital' && selectedHospitalSummary && (
+        <HospitalDailyTable
+          rows={selectedHospitalSummary.days}
+          onEditDate={(date) => setEditDayModal({ hospitalId: selectedHospitalSummary.hospital.id, hospitalName: selectedHospitalSummary.hospital.name, date })}
+          onDeleteDate={(date) => handleDeleteDay(selectedHospitalSummary.hospital.id, date)}
+        />
+      )}
 
-      {/* Attendance Summary */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <Clock className="w-4 h-4 text-amber-500" />
-          <h2 className="font-semibold text-slate-700">Attendance Summary</h2>
-        </div>
-        {filteredAttendance.length === 0 ? (
-          <p className="text-sm text-slate-400 py-4 text-center">No attendance entries found for the selected filters.</p>
-        ) : (
-          <div className="space-y-4">
-            {/* Overall counts */}
-            <div className="flex flex-wrap gap-2">
-              <span className="inline-flex items-center gap-1.5 text-sm font-medium text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-lg">
-                <CheckCircle2 className="w-4 h-4" /> Present: {attPresent}
-              </span>
-              <span className="inline-flex items-center gap-1.5 text-sm font-medium text-red-700 bg-red-50 px-3 py-1.5 rounded-lg">
-                <LogOut className="w-4 h-4" /> Leave: {attLeave.length}
-              </span>
-              <span className="inline-flex items-center gap-1.5 text-sm font-medium text-amber-700 bg-amber-50 px-3 py-1.5 rounded-lg">
-                <Zap className="w-4 h-4" /> Extra Duty: {attExtra.length}
-              </span>
-            </div>
-
-            {/* Leave type breakdown */}
-            {Object.keys(leaveTypeCounts).length > 0 && (
-              <div>
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Leave Types</p>
-                <div className="flex flex-wrap gap-2">
-                  {Object.entries(leaveTypeCounts).map(([type, count]) => (
-                    <span key={type} className="text-xs font-medium text-red-700 bg-red-50 px-2.5 py-1 rounded-full">
-                      {type}: {count}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Extra duty type breakdown */}
-            {Object.keys(extraTypeCounts).length > 0 && (
-              <div>
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Extra Duty Types</p>
-                <div className="flex flex-wrap gap-2">
-                  {Object.entries(extraTypeCounts).map(([type, count]) => (
-                    <span key={type} className="text-xs font-medium text-amber-700 bg-amber-50 px-2.5 py-1 rounded-full">
-                      {type}: {count}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Hospital-wise breakdown */}
-            {attendanceByHospital.length > 0 && (
-              <div className="pt-2 border-t border-slate-100">
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Hospital-wise Breakdown</p>
-                <div className="space-y-3">
-                  {attendanceByHospital.map((a) => (
-                    <div key={a.hospital.id} className="p-3 rounded-lg border border-slate-100 bg-slate-50">
-                      <p className="text-sm font-medium text-slate-700 mb-2">{a.hospital.name}</p>
-                      <div className="flex flex-wrap gap-2">
-                        <span className="text-xs font-medium text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full">
-                          Present: {a.present}
-                        </span>
-                        {Object.entries(a.leaveTypes).map(([type, count]) => (
-                          <span key={type} className="text-xs font-medium text-red-700 bg-red-50 px-2.5 py-1 rounded-full">
-                            Leave ({type}): {count}
-                          </span>
-                        ))}
-                        {Object.entries(a.extraTypes).map(([type, count]) => (
-                          <span key={type} className="text-xs font-medium text-amber-700 bg-amber-50 px-2.5 py-1 rounded-full">
-                            Extra ({type}): {count}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Attendance Log */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <Clock className="w-4 h-4 text-slate-500" />
-          <h2 className="font-semibold text-slate-700">Attendance Log</h2>
-        </div>
-        {filteredAttendance.length === 0 ? (
-          <p className="text-sm text-slate-400 py-4 text-center">No attendance entries found for the selected filters.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-100 text-left text-xs text-slate-500 uppercase tracking-wide">
-                  <th className="px-3 py-2 font-medium">Date</th>
-                  <th className="px-3 py-2 font-medium">Hospital</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
-                  <th className="px-3 py-2 font-medium">Type</th>
-                  <th className="px-3 py-2 font-medium">Notes</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredAttendance.map((a) => (
-                  <tr key={a.id} className="border-b border-slate-50">
-                    <td className="px-3 py-2.5 text-slate-600">{formatDate(a.attendance_date)}</td>
-                    <td className="px-3 py-2.5 font-medium text-slate-700">{a.hospital?.name || '—'}</td>
-                    <td className="px-3 py-2.5">
-                      {a.status === 'present' && <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full"><CheckCircle2 className="w-3 h-3" /> Present</span>}
-                      {a.status === 'leave' && <span className="inline-flex items-center gap-1 text-xs font-medium text-red-700 bg-red-50 px-2 py-0.5 rounded-full"><LogOut className="w-3 h-3" /> Leave</span>}
-                      {a.status === 'extra_duty' && <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full"><Zap className="w-3 h-3" /> Extra Duty</span>}
-                    </td>
-                    <td className="px-3 py-2.5 text-slate-600">{a.leave_type || a.extra_duty_type || '—'}</td>
-                    <td className="px-3 py-2.5 text-slate-400">{a.notes || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function StatCard({ label, value, icon: Icon, color }: { label: string; value: string | number; icon: typeof Users; color: string }) {
-  const colorMap: Record<string, string> = {
-    sky: 'bg-sky-50 text-sky-600',
-    emerald: 'bg-emerald-50 text-emerald-600',
-    amber: 'bg-amber-50 text-amber-600',
-    red: 'bg-red-50 text-red-600',
-    violet: 'bg-violet-50 text-violet-600',
-  };
-  return (
-    <div className="bg-white rounded-xl border border-slate-200 p-4">
-      <div className={`w-9 h-9 rounded-lg flex items-center justify-center mb-2 ${colorMap[color]}`}>
-        <Icon className="w-4 h-4" />
-      </div>
-      <p className="text-xl font-bold text-slate-800">{value}</p>
-      <p className="text-xs text-slate-400">{label}</p>
+      {editDayModal && (
+        <EditDayModal
+          hospitalId={editDayModal.hospitalId}
+          hospitalName={editDayModal.hospitalName}
+          date={editDayModal.date}
+          existingEntry={monthlyEntries.find((me) => me.hospital_id === editDayModal.hospitalId && (me.entry_date || me.month).substring(0, 10) === editDayModal.date) || null}
+          existingAttendance={attendance.find((a) => a.hospital_id === editDayModal.hospitalId && a.attendance_date === editDayModal.date) || null}
+          userId={user!.id}
+          onClose={() => setEditDayModal(null)}
+          onSaved={() => { setEditDayModal(null); load(); }}
+        />
+      )}
     </div>
   );
 }

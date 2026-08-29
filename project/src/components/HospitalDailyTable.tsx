@@ -1,34 +1,22 @@
 import { useMemo, useState } from 'react';
 import { formatDate, formatCurrency } from '@/lib/helpers';
+import { DailyRow } from '@/lib/hospitalSummary';
 import { Pencil, Trash2, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react';
 
-export interface DailyRow {
-  date: string;
-  hospitalName: string;
-  attendanceStatusLabel: string | null;
-  opCount: number;
-  ipCount: number;
-  opinionCount: number;
-  surgeriesCount: number;
-  feesGenerated: number;
-  feesReceived: number;
-  pendingFees: number;
-  isMissing: boolean;
-  isZeroActivity: boolean;
-  hasAnyRecord: boolean;
-}
+export type { DailyRow };
 
 const STATUS_FILTERS = ['All', 'Present', 'Duty', 'Leave', 'Extra Duty', 'Missing', 'Zero Activity'] as const;
 type StatusFilter = typeof STATUS_FILTERS[number];
 
 const PAGE_SIZE = 12;
 
-const STATUS_BADGE: Record<string, string> = {
-  Present: 'bg-emerald-50 text-emerald-700',
-  Duty: 'bg-sky-50 text-sky-700',
-  Leave: 'bg-red-50 text-red-700',
-  'Extra Duty': 'bg-amber-50 text-amber-700',
-};
+function statusBadgeClass(label: string): string {
+  if (label === 'Present') return 'bg-emerald-50 text-emerald-700';
+  if (label === 'Duty') return 'bg-sky-50 text-sky-700';
+  if (label.startsWith('Leave')) return 'bg-red-50 text-red-700';
+  if (label === 'Extra Duty') return 'bg-amber-50 text-amber-700';
+  return 'bg-slate-100 text-slate-600';
+}
 
 interface Props {
   rows: DailyRow[];
@@ -50,6 +38,7 @@ export default function HospitalDailyTable({ rows, onEditDate, onDeleteDate }: P
       case 'All': return rows;
       case 'Missing': return rows.filter((r) => r.isMissing);
       case 'Zero Activity': return rows.filter((r) => r.isZeroActivity);
+      case 'Leave': return rows.filter((r) => r.attendanceStatusLabel?.startsWith('Leave'));
       default: return rows.filter((r) => r.attendanceStatusLabel === statusFilter);
     }
   }, [rows, statusFilter]);
@@ -118,7 +107,7 @@ export default function HospitalDailyTable({ rows, onEditDate, onDeleteDate }: P
                     <td className="px-3 py-2.5 text-slate-500">{r.hospitalName}</td>
                     <td className="px-3 py-2.5">
                       {r.attendanceStatusLabel ? (
-                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_BADGE[r.attendanceStatusLabel] || 'bg-slate-100 text-slate-600'}`}>
+                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${statusBadgeClass(r.attendanceStatusLabel)}`}>
                           {r.attendanceStatusLabel}
                         </span>
                       ) : (

@@ -1,12 +1,23 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import { Hospital, MonthlyEntry, Attendance, Patient, ClassEntry } from '@/lib/types';
-import { formatCurrency, formatDate, uploadImage, ensurePresentAttendance } from '@/lib/helpers';
+import { Hospital, MonthlyEntry, Attendance, Patient, ClassEntry, Payment, Surgery } from '@/lib/types';
+import { formatDate, uploadImage, ensurePresentAttendance } from '@/lib/helpers';
 import { getColSummary } from '@/lib/col';
-import { Building2, Plus, Trash2, X, Calendar, Pencil, Users, Activity, Clock, CheckCircle2, LogOut, Zap, Search, UserRound, Stethoscope, ArrowRight, GraduationCap, Upload } from 'lucide-react';
+import { buildHospitalSummaries } from '@/lib/hospitalSummary';
+import {
+  Building2, Plus, Trash2, X, Calendar, Pencil, Clock, CheckCircle2, LogOut, Zap, Search,
+  UserRound, Stethoscope, ArrowRight, GraduationCap, Upload, ArrowLeft, ChevronLeft, ChevronRight, Award,
+} from 'lucide-react';
 import PatientForm from './PatientForm';
 import PatientRegistrationWizard from './PatientRegistrationWizard';
+import HospitalDailyTable from './HospitalDailyTable';
+import EditDayModal from './EditDayModal';
+
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
 
 export default function Hospitals() {
   const { user } = useAuth();
@@ -14,12 +25,22 @@ export default function Hospitals() {
   const [entries, setEntries] = useState<MonthlyEntry[]>([]);
   const [attendance, setAttendance] = useState<Attendance[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [surgeries, setSurgeries] = useState<Surgery[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [showEntry, setShowEntry] = useState(false);
   const [showAttendance, setShowAttendance] = useState(false);
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
+
+  // Layer 1 (hospital metric cards) / Layer 2 (date-wise drill-down)
+  const [level, setLevel] = useState<'cards' | 'detail'>('cards');
+  const [selectedHospitalId, setSelectedHospitalId] = useState<string | null>(null);
+  const [editDayModal, setEditDayModal] = useState<{ hospitalId: string; hospitalName: string; date: string } | null>(null);
+  const now = new Date();
+  const [selectedYear, setSelectedYear] = useState(now.getFullYear());
+  const [selectedMonth, setSelectedMonth] = useState(now.getMonth());
 
   // OP/IP patient entry
   const [patientSearch, setPatientSearch] = useState('');
@@ -69,18 +90,22 @@ export default function Hospitals() {
   const [eNotes, setENotes] = useState('');
 
   const load = async () => {
-    const [{ data: h }, { data: me }, { data: att }, { data: pts }, { data: cls }] = await Promise.all([
+    const [{ data: h }, { data: me }, { data: att }, { data: pts }, { data: cls }, { data: pay }, { data: sur }] = await Promise.all([
       supabase.from('hospitals').select('*').order('name'),
       supabase.from('monthly_entries').select('*, hospital:hospitals(*)').order('entry_date', { ascending: false }),
       supabase.from('attendance').select('*, hospital:hospitals(*)').order('attendance_date', { ascending: false }),
       supabase.from('patients').select('*, hospital:hospitals(*)').order('created_at', { ascending: false }),
       supabase.from('classes').select('*, hospital:hospitals(*)').order('class_date', { ascending: false }),
+      supabase.from('payments').select('*, patient:patients(*)'),
+      supabase.from('surgeries').select('*'),
     ]);
     setHospitals(h || []);
     setEntries(me || []);
     setAttendance(att || []);
     setPatients(pts || []);
     setClasses(cls || []);
+    setPayments(pay || []);
+    setSurgeries(sur || []);
     setLoading(false);
   };
 
@@ -93,18 +118,6 @@ export default function Hospitals() {
     setError(null);
   };
 
-  const openEditEntry = (e: MonthlyEntry) => {
-    setEditingId(e.id);
-    setEHospital(e.hospital_id);
-    setEDate(e.entry_date ? e.entry_date.substring(0, 10) : '');
-    setEOp(e.op_patients?.toString() || '');
-    setEOpinion(e.opinion_patients?.toString() || '');
-    setEFeesGen(e.fees_generated?.toString() || '');
-    setEFeesRec(e.fees_received?.toString() || '');
-    setENotes(e.notes || '');
-    setError(null);
-    setShowEntry(true);
-  };
 
   const handleAddHospital = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -152,11 +165,6 @@ export default function Hospitals() {
     load();
   };
 
-  const handleDeleteEntry = async (id: string) => {
-    if (!confirm('Delete this daily entry?')) return;
-    await supabase.from('monthly_entries').delete().eq('id', id);
-    load();
-  };
 
   const resetAttendanceForm = () => {
     setAttHospital(''); setAttDate(new Date().toISOString().split('T')[0]);
@@ -207,11 +215,26 @@ export default function Hospitals() {
     load();
   };
 
-  const handleDeleteAttendance = async (id: string) => {
-    if (!confirm('Delete this attendance entry?')) return;
-    await supabase.from('attendance').delete().eq('id', id);
+
+  const handleDeleteDay = async (hospitalId: string, date: string) => {
+    if (!confirm(`Delete all daily-entry and attendance records for ${formatDate(date)}? This cannot be undone.`)) return;
+    await Promise.all([
+      supabase.from('monthly_entries').delete().eq('hospital_id', hospitalId).eq('entry_date', date),
+      supabase.from('attendance').delete().eq('hospital_id', hospitalId).eq('attendance_date', date),
+    ]);
     load();
   };
+
+  const openHospitalDetail = (hospitalId: string) => { setSelectedHospitalId(hospitalId); setLevel('detail'); };
+
+  const goToPrevMonth = () => {
+    if (selectedMonth === 0) { setSelectedMonth(11); setSelectedYear(selectedYear - 1); } else { setSelectedMonth(selectedMonth - 1); }
+  };
+  const goToNextMonth = () => {
+    if (selectedMonth === 11) { setSelectedMonth(0); setSelectedYear(selectedYear + 1); } else { setSelectedMonth(selectedMonth + 1); }
+  };
+  const isCurrentMonth = selectedYear === now.getFullYear() && selectedMonth === now.getMonth();
+  const goToCurrentMonth = () => { setSelectedMonth(now.getMonth()); setSelectedYear(now.getFullYear()); };
 
   const resetClassForm = () => {
     setEditingClassId(null);
@@ -272,6 +295,16 @@ export default function Hospitals() {
     await supabase.from('classes').delete().eq('id', id);
     load();
   };
+
+  const monthStart = new Date(selectedYear, selectedMonth, 1).toISOString().substring(0, 10);
+  const monthEnd = new Date(selectedYear, selectedMonth + 1, 0).toISOString().substring(0, 10);
+  const todayStr = now.toISOString().substring(0, 10);
+
+  const hospitalSummary = buildHospitalSummaries({
+    hospitals, patients, payments, surgeries, monthlyEntries: entries, attendance,
+    rangeStart: monthStart, rangeEnd: monthEnd, todayStr,
+  });
+  const selectedHospitalSummary = hospitalSummary.find((hs) => hs.hospital.id === selectedHospitalId) || null;
 
   const matchedPatients = patientSearch.trim().length >= 2
     ? patients.filter((p) => {
@@ -505,163 +538,128 @@ export default function Hospitals() {
         )}
       </div>
 
-      {/* Hospitals */}
-      {loading ? (
-        <div className="flex items-center justify-center h-40">
-          <div className="w-8 h-8 border-2 border-sky-200 border-t-sky-600 rounded-full animate-spin" />
+      {/* Layer 1 / Layer 2: Hospital-wise attendance & activity */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-3">
+          {level === 'detail' && (
+            <button onClick={() => { setLevel('cards'); setSelectedHospitalId(null); }} className="p-2 rounded-lg hover:bg-slate-100 transition">
+              <ArrowLeft className="w-5 h-5 text-slate-500" />
+            </button>
+          )}
+          <div>
+            <h2 className="font-semibold text-slate-800">
+              {level === 'cards' ? 'Hospital-wise Attendance' : selectedHospitalSummary?.hospital.name || 'Hospital'}
+            </h2>
+            <p className="text-slate-400 text-xs mt-0.5">
+              {level === 'cards' ? 'Days present, duties, leaves and COL — click a hospital for the date-wise log' : `Date-wise log — ${MONTHS[selectedMonth]} ${selectedYear}`}
+            </p>
+          </div>
         </div>
-      ) : hospitals.length === 0 ? (
-        <div className="bg-white rounded-xl border border-slate-200 p-8 text-center">
-          <Building2 className="w-10 h-10 text-slate-300 mx-auto mb-3" />
-          <p className="text-slate-500">No hospitals added yet. Add one to get started.</p>
+        <div className="flex items-center gap-2 bg-white rounded-xl border border-slate-200 px-3 py-2">
+          <button onClick={goToPrevMonth} className="p-1 rounded-lg hover:bg-slate-100 transition"><ChevronLeft className="w-4 h-4 text-slate-500" /></button>
+          <select value={selectedMonth} onChange={(e) => setSelectedMonth(parseInt(e.target.value))} className="text-sm font-medium text-slate-700 bg-transparent focus:outline-none cursor-pointer">
+            {MONTHS.map((m, i) => <option key={m} value={i}>{m}</option>)}
+          </select>
+          <select value={selectedYear} onChange={(e) => setSelectedYear(parseInt(e.target.value))} className="text-sm font-medium text-slate-700 bg-transparent focus:outline-none cursor-pointer">
+            {[selectedYear - 1, selectedYear, selectedYear + 1].filter((y) => y <= now.getFullYear() + 1).map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <button onClick={goToNextMonth} className="p-1 rounded-lg hover:bg-slate-100 transition"><ChevronRight className="w-4 h-4 text-slate-500" /></button>
+          {!isCurrentMonth && (
+            <button onClick={goToCurrentMonth} className="ml-1 text-xs font-medium text-sky-600 hover:text-sky-700 px-2 py-1 rounded-lg hover:bg-sky-50 transition">Today</button>
+          )}
         </div>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {hospitals.map((h) => {
-            const hospEntries = entries.filter((e) => e.hospital_id === h.id);
-            const totalOp = hospEntries.reduce((s, e) => s + e.op_patients, 0);
-            const totalOpinion = hospEntries.reduce((s, e) => s + e.opinion_patients, 0);
-            return (
-              <div key={h.id} className="bg-white rounded-xl border border-slate-200 p-5 group">
-                <div className="flex items-start justify-between">
-                  <div className="w-10 h-10 bg-emerald-50 rounded-lg flex items-center justify-center">
-                    <Building2 className="w-5 h-5 text-emerald-600" />
-                  </div>
+      </div>
+
+      {level === 'cards' && (
+        loading ? (
+          <div className="flex items-center justify-center h-40">
+            <div className="w-8 h-8 border-2 border-sky-200 border-t-sky-600 rounded-full animate-spin" />
+          </div>
+        ) : hospitals.length === 0 ? (
+          <div className="bg-white rounded-xl border border-slate-200 p-8 text-center">
+            <Building2 className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+            <p className="text-slate-500">No hospitals added yet. Add one to get started.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {hospitalSummary.map((hs) => (
+              <div key={hs.hospital.id} className="bg-white rounded-xl border border-slate-200 p-5 group hover:border-sky-300 hover:shadow-sm transition">
+                <div className="flex items-start justify-between mb-3">
+                  <button onClick={() => openHospitalDetail(hs.hospital.id)} className="flex items-center gap-2 text-left">
+                    <div className="w-9 h-9 bg-emerald-50 rounded-lg flex items-center justify-center flex-shrink-0">
+                      <Building2 className="w-4.5 h-4.5 text-emerald-600" />
+                    </div>
+                    <h3 className="font-semibold text-slate-800">{hs.hospital.name}</h3>
+                  </button>
                   <button
-                    onClick={() => handleDeleteHospital(h.id)}
-                    className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition"
+                    onClick={() => handleDeleteHospital(hs.hospital.id)}
+                    className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition flex-shrink-0"
+                    title="Delete hospital"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
-                <h3 className="font-semibold text-slate-800 mt-3">{h.name}</h3>
-                <p className="text-xs text-slate-400 mt-1">
-                  {hospEntries.length} daily {hospEntries.length === 1 ? 'entry' : 'entries'}
-                </p>
-                {hospEntries.length > 0 && (
-                  <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-2 gap-2">
-                    <div className="flex items-center gap-1.5 text-xs">
-                      <Users className="w-3.5 h-3.5 text-sky-500" />
-                      <span className="text-slate-500">OP: <span className="font-medium text-slate-700">{totalOp}</span></span>
+                <button onClick={() => openHospitalDetail(hs.hospital.id)} className="w-full text-left space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="p-2.5 rounded-lg bg-slate-50">
+                      <p className="text-lg font-bold text-emerald-700">{hs.present}</p>
+                      <p className="text-[10px] text-slate-400 uppercase">Days Present</p>
                     </div>
-                    <div className="flex items-center gap-1.5 text-xs">
-                      <Activity className="w-3.5 h-3.5 text-violet-500" />
-                      <span className="text-slate-500">Opinion: <span className="font-medium text-slate-700">{totalOpinion}</span></span>
+                    <div className="p-2.5 rounded-lg bg-slate-50">
+                      <p className="text-lg font-bold text-sky-700">{hs.dutyCount}</p>
+                      <p className="text-[10px] text-slate-400 uppercase">24-Hour Duties</p>
                     </div>
                   </div>
-                )}
+                  <div>
+                    <p className="text-[10px] font-medium text-slate-400 uppercase mb-1.5">Total Leaves ({hs.leaveBreakdown.cl + hs.leaveBreakdown.col + hs.leaveBreakdown.other})</p>
+                    <div className="grid grid-cols-3 gap-1 text-center">
+                      <div><p className="text-sm font-bold text-red-700">{hs.leaveBreakdown.cl}</p><p className="text-[9px] text-slate-400">CL</p></div>
+                      <div><p className="text-sm font-bold text-amber-700">{hs.leaveBreakdown.col}</p><p className="text-[9px] text-slate-400">COL</p></div>
+                      <div><p className="text-sm font-bold text-slate-600">{hs.leaveBreakdown.other}</p><p className="text-[9px] text-slate-400">Other</p></div>
+                    </div>
+                  </div>
+                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700">
+                      <Award className="w-3.5 h-3.5" /> COL: {hs.colAccrued} accrued / {hs.colAvailable} available
+                    </span>
+                    {hs.missingEntryDates.length > 0 && (
+                      <span className="text-xs text-red-600 font-medium">{hs.missingEntryDates.length} missing</span>
+                    )}
+                  </div>
+                </button>
               </div>
-            );
-          })}
+            ))}
+          </div>
+        )
+      )}
+
+      {level === 'detail' && selectedHospitalSummary && (
+        <div className="space-y-4">
+          {selectedHospitalSummary.colAvailable > 0 && (
+            <span className="text-xs font-medium text-amber-700 bg-amber-50 px-3 py-1.5 rounded-full inline-flex items-center gap-1">
+              <Award className="w-3.5 h-3.5" /> {selectedHospitalSummary.colAvailable} COL credit{selectedHospitalSummary.colAvailable !== 1 ? 's' : ''} available
+            </span>
+          )}
+          <HospitalDailyTable
+            rows={selectedHospitalSummary.days}
+            onEditDate={(date) => setEditDayModal({ hospitalId: selectedHospitalSummary.hospital.id, hospitalName: selectedHospitalSummary.hospital.name, date })}
+            onDeleteDate={(date) => handleDeleteDay(selectedHospitalSummary.hospital.id, date)}
+          />
         </div>
       )}
 
-      {/* Daily Entries Table */}
-      {entries.length > 0 && (
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-          <div className="p-5 border-b border-slate-100">
-            <h2 className="font-semibold text-slate-700">Daily Entries</h2>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-100 bg-slate-50 text-left text-xs text-slate-500 uppercase tracking-wide">
-                  <th className="px-4 py-3 font-medium">Date</th>
-                  <th className="px-4 py-3 font-medium">Hospital</th>
-                  <th className="px-4 py-3 font-medium">OP</th>
-                  <th className="px-4 py-3 font-medium">Opinion</th>
-                  <th className="px-4 py-3 font-medium">Fees Gen.</th>
-                  <th className="px-4 py-3 font-medium">Fees Rec.</th>
-                  <th className="px-4 py-3 font-medium">Pending</th>
-                  <th className="px-4 py-3"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {entries.map((e) => {
-                  const pending = e.fees_generated - e.fees_received;
-                  return (
-                    <tr key={e.id} className="border-b border-slate-50 group">
-                      <td className="px-4 py-3 text-slate-600">
-                        {formatDate(e.entry_date || e.month)}
-                      </td>
-                      <td className="px-4 py-3 font-medium text-slate-700">{e.hospital?.name || '—'}</td>
-                      <td className="px-4 py-3 text-slate-600">{e.op_patients}</td>
-                      <td className="px-4 py-3 text-slate-600">{e.opinion_patients}</td>
-                      <td className="px-4 py-3 text-slate-600">{formatCurrency(e.fees_generated)}</td>
-                      <td className="px-4 py-3 text-emerald-600 font-medium">{formatCurrency(e.fees_received)}</td>
-                      <td className={`px-4 py-3 font-medium ${pending > 0 ? 'text-red-600' : 'text-slate-400'}`}>
-                        {formatCurrency(pending)}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => openEditEntry(e)}
-                            className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-sky-500 transition"
-                          >
-                            <Pencil className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => handleDeleteEntry(e.id)}
-                            className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
+      {editDayModal && (
+        <EditDayModal
+          hospitalId={editDayModal.hospitalId}
+          hospitalName={editDayModal.hospitalName}
+          date={editDayModal.date}
+          existingEntry={entries.find((me) => me.hospital_id === editDayModal.hospitalId && (me.entry_date || me.month).substring(0, 10) === editDayModal.date) || null}
+          existingAttendance={attendance.find((a) => a.hospital_id === editDayModal.hospitalId && a.attendance_date === editDayModal.date) || null}
+          userId={user!.id}
+          onClose={() => setEditDayModal(null)}
+          onSaved={() => { setEditDayModal(null); load(); }}
+        />
       )}
-
-      {/* Attendance Entries */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <Clock className="w-4 h-4 text-amber-500" />
-          <h2 className="font-semibold text-slate-700">Attendance Entries</h2>
-        </div>
-        {attendance.length === 0 ? (
-          <p className="text-sm text-slate-400 py-4 text-center">No attendance entries yet. Click "Add Attendance" to record one.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-100 text-left text-xs text-slate-500 uppercase tracking-wide">
-                  <th className="px-3 py-2 font-medium">Date</th>
-                  <th className="px-3 py-2 font-medium">Hospital</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
-                  <th className="px-3 py-2 font-medium">Type</th>
-                  <th className="px-3 py-2 font-medium">Notes</th>
-                  <th className="px-3 py-2"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {attendance.map((a) => (
-                  <tr key={a.id} className="border-b border-slate-50 group">
-                    <td className="px-3 py-2.5 text-slate-600">{formatDate(a.attendance_date)}</td>
-                    <td className="px-3 py-2.5 font-medium text-slate-700">{a.hospital?.name || '—'}</td>
-                    <td className="px-3 py-2.5">
-                      {a.status === 'present' && <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full"><CheckCircle2 className="w-3 h-3" /> Present</span>}
-                      {a.status === 'leave' && <span className="inline-flex items-center gap-1 text-xs font-medium text-red-700 bg-red-50 px-2 py-0.5 rounded-full"><LogOut className="w-3 h-3" /> Leave</span>}
-                      {a.status === 'extra_duty' && <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full"><Zap className="w-3 h-3" /> Extra Duty</span>}
-                    </td>
-                    <td className="px-3 py-2.5 text-slate-600">{a.leave_type || a.extra_duty_type || '—'}</td>
-                    <td className="px-3 py-2.5 text-slate-400 max-w-xs truncate">{a.notes || '—'}</td>
-                    <td className="px-3 py-2.5">
-                      <button onClick={() => handleDeleteAttendance(a.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition p-1">
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
 
       {/* Add Hospital Modal */}
       {showAdd && (

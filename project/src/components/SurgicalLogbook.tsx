@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import { Patient, Hospital, Surgery, ClassEntry, Publication, Investigation } from '@/lib/types';
+import { Patient, Hospital, Surgery, ClassEntry, Publication, Investigation, ProcedureCategory } from '@/lib/types';
 import { formatDate, getImageUrl } from '@/lib/helpers';
-import { Activity, Download, Filter, X, GraduationCap, BookOpen } from 'lucide-react';
+import { Activity, Download, Filter, X, GraduationCap, BookOpen, Stethoscope, Pencil, RefreshCw } from 'lucide-react';
 import jsPDF from 'jspdf';
 
 const MONTHS = [
@@ -102,51 +102,54 @@ export default function SurgicalLogbook() {
   const [qualifications, setQualifications] = useState('');
 
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
+  const [editingCase, setEditingCase] = useState<LogbookRow | null>(null);
+
+  const load = async () => {
+    const [{ data: surgeries }, { data: patients }, { data: hospitals }, { data: cls }, { data: pubs }, { data: invs }] = await Promise.all([
+      supabase.from('surgeries').select('*').order('surgery_date', { ascending: false, nullsFirst: false }),
+      supabase.from('patients').select('*, hospital:hospitals(*)'),
+      supabase.from('hospitals').select('*').order('name'),
+      supabase.from('classes').select('*, hospital:hospitals(*)').order('class_date', { ascending: false }),
+      supabase.from('publications').select('*').order('year', { ascending: false }),
+      supabase.from('investigations').select('*'),
+    ]);
+    const patientMap = new Map<string, Patient>();
+    (patients || []).forEach((p: Patient) => patientMap.set(p.id, p));
+    const hospitalMap = new Map<string, Hospital>();
+    (hospitals || []).forEach((h: Hospital) => hospitalMap.set(h.id, h));
+    const built: LogbookRow[] = (surgeries || []).map((s: Surgery) => ({
+      surgery: s,
+      patient: patientMap.get(s.patient_id) || null,
+      hospital: hospitalMap.get(patientMap.get(s.patient_id)?.hospital_id || '') || null,
+    }));
+    setRows(built);
+    setClasses(cls || []);
+    setPublications(pubs || []);
+
+    const invByPatient = new Map<string, Investigation[]>();
+    (invs || []).forEach((inv: Investigation) => {
+      const list = invByPatient.get(inv.patient_id) || [];
+      list.push(inv);
+      invByPatient.set(inv.patient_id, list);
+    });
+    setInvestigationsByPatient(invByPatient);
+    setLoading(false);
+
+    const allPaths = (surgeries || []).flatMap((s: Surgery) => [
+      ...(s.image_paths || []),
+      ...(s.consent_image_paths || []),
+    ]);
+    const urlMap: Record<string, string> = {};
+    for (const path of allPaths) {
+      const url = await getImageUrl(path);
+      if (url) urlMap[path] = url;
+    }
+    setImageUrls(urlMap);
+  };
 
   useEffect(() => {
     if (!user) return;
-    (async () => {
-      const [{ data: surgeries }, { data: patients }, { data: hospitals }, { data: cls }, { data: pubs }, { data: invs }] = await Promise.all([
-        supabase.from('surgeries').select('*').order('surgery_date', { ascending: false, nullsFirst: false }),
-        supabase.from('patients').select('*, hospital:hospitals(*)'),
-        supabase.from('hospitals').select('*').order('name'),
-        supabase.from('classes').select('*, hospital:hospitals(*)').order('class_date', { ascending: false }),
-        supabase.from('publications').select('*').order('year', { ascending: false }),
-        supabase.from('investigations').select('*'),
-      ]);
-      const patientMap = new Map<string, Patient>();
-      (patients || []).forEach((p: Patient) => patientMap.set(p.id, p));
-      const hospitalMap = new Map<string, Hospital>();
-      (hospitals || []).forEach((h: Hospital) => hospitalMap.set(h.id, h));
-      const built: LogbookRow[] = (surgeries || []).map((s: Surgery) => ({
-        surgery: s,
-        patient: patientMap.get(s.patient_id) || null,
-        hospital: hospitalMap.get(patientMap.get(s.patient_id)?.hospital_id || '') || null,
-      }));
-      setRows(built);
-      setClasses(cls || []);
-      setPublications(pubs || []);
-
-      const invByPatient = new Map<string, Investigation[]>();
-      (invs || []).forEach((inv: Investigation) => {
-        const list = invByPatient.get(inv.patient_id) || [];
-        list.push(inv);
-        invByPatient.set(inv.patient_id, list);
-      });
-      setInvestigationsByPatient(invByPatient);
-      setLoading(false);
-
-      const allPaths = (surgeries || []).flatMap((s: Surgery) => [
-        ...(s.image_paths || []),
-        ...(s.consent_image_paths || []),
-      ]);
-      const urlMap: Record<string, string> = {};
-      for (const path of allPaths) {
-        const url = await getImageUrl(path);
-        if (url) urlMap[path] = url;
-      }
-      setImageUrls(urlMap);
-    })();
+    load();
   }, [user]);
 
   const availableYears = Array.from(
@@ -183,6 +186,11 @@ export default function SurgicalLogbook() {
     }
     return true;
   });
+
+  const datedFilteredDates = filtered.filter((r) => r.surgery.surgery_date).map((r) => r.surgery.surgery_date!.substring(0, 10)).sort();
+  const datedRangeLabel = datedFilteredDates.length > 0
+    ? `From ${formatDate(datedFilteredDates[0])} to ${formatDate(datedFilteredDates[datedFilteredDates.length - 1])}`
+    : '';
 
   const activeFilters: string[] = [];
   if (monthFilter) activeFilters.push(`Month: ${monthFilter}`);
@@ -245,10 +253,7 @@ export default function SurgicalLogbook() {
       const nameLine = [doctorName.trim(), qualifications.trim()].filter(Boolean).join(', ');
       if (nameLine) doc.text(nameLine, pageWidth / 2, pageHeight * 0.22 + 34, { align: 'center' });
 
-      const datedFiltered = filtered.filter((r) => r.surgery.surgery_date).map((r) => r.surgery.surgery_date!.substring(0, 10)).sort();
-      const rangeText = datedFiltered.length > 0
-        ? `From ${formatDate(datedFiltered[0])} to ${formatDate(datedFiltered[datedFiltered.length - 1])}`
-        : '';
+      const rangeText = datedRangeLabel;
       if (rangeText) {
         doc.setFontSize(11);
         doc.setTextColor(...TEAL);
@@ -655,10 +660,28 @@ export default function SurgicalLogbook() {
         )}
       </div>
 
+      {/* Live Preview — cover */}
+      <div className="rounded-xl overflow-hidden border border-slate-200 shadow-sm" style={{ background: '#1E293B' }}>
+        <div className="px-6 py-10 text-center">
+          <p className="text-white text-3xl font-bold tracking-wide">LOGBOOK</p>
+          {(doctorName.trim() || qualifications.trim()) && (
+            <p className="text-slate-200 text-sm mt-2">{[doctorName.trim(), qualifications.trim()].filter(Boolean).join(', ')}</p>
+          )}
+          {datedRangeLabel && <p className="text-teal-300 text-xs font-medium mt-1.5">{datedRangeLabel}</p>}
+          <div className="mx-auto mt-5 w-16 h-16 rounded-full bg-slate-100/10 border border-slate-400/30 flex items-center justify-center">
+            <Stethoscope className="w-7 h-7 text-teal-300" />
+          </div>
+          <p className="text-slate-400 text-[11px] mt-4">{filtered.length} case{filtered.length !== 1 ? 's' : ''} in this view</p>
+        </div>
+      </div>
+
       {/* Results count */}
-      <p className="text-sm text-slate-500">
-        Showing <span className="font-semibold text-slate-700">{filtered.length}</span> of {rows.length} surgeries
-      </p>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <p className="text-sm text-slate-500">
+          Showing <span className="font-semibold text-slate-700">{filtered.length}</span> of {rows.length} surgeries — live preview, click <Pencil className="w-3 h-3 inline" /> to edit a case
+        </p>
+        <span className="text-xs text-slate-400 inline-flex items-center gap-1"><RefreshCw className="w-3 h-3" /> Edits save directly to the patient record and update this preview and the PDF export immediately</span>
+      </div>
 
       {/* Logbook entries */}
       {filtered.length === 0 ? (
@@ -672,15 +695,23 @@ export default function SurgicalLogbook() {
           {filtered.map((r) => {
             const p = r.patient;
             return (
-              <div key={r.surgery.id} className="bg-white rounded-xl border border-slate-200 p-4 hover:shadow-sm transition">
+              <div key={r.surgery.id} className={`bg-white rounded-xl border p-4 hover:shadow-sm transition ${categorize(r.surgery) === 'Major' ? 'border-teal-200' : 'border-slate-200'}`}>
                 <div className="flex items-start justify-between gap-3 flex-wrap">
                   <div className="flex-1 min-w-[200px]">
                     <div className="flex items-center gap-2 flex-wrap mb-1">
                       <span className="font-semibold text-slate-800">{p?.patient_name || 'Unknown patient'}</span>
                       <span className="text-xs font-mono bg-sky-50 text-sky-600 px-2 py-0.5 rounded">{p?.unique_id || '—'}</span>
+                      <span className="text-xs font-medium px-2 py-0.5 rounded bg-teal-50 text-teal-700">{categorize(r.surgery)}</span>
                       <span className={`text-xs font-medium px-2 py-0.5 rounded ${r.surgery.role === 'assisted_by_me' ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'}`}>
                         {r.surgery.role === 'assisted_by_me' ? 'Assisted' : 'Done by me'}
                       </span>
+                      <button
+                        onClick={() => setEditingCase(r)}
+                        className="ml-auto flex items-center gap-1 text-xs font-medium text-slate-400 hover:text-sky-600 transition px-2 py-0.5 rounded hover:bg-sky-50"
+                        title="Edit this case"
+                      >
+                        <Pencil className="w-3.5 h-3.5" /> Edit
+                      </button>
                     </div>
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-slate-500">
                       <div><span className="text-slate-400">Date:</span> {formatDate(r.surgery.surgery_date)}</div>
@@ -688,6 +719,9 @@ export default function SurgicalLogbook() {
                       <div><span className="text-slate-400">Hospital:</span> {r.hospital?.name || '—'}</div>
                       <div><span className="text-slate-400">Type:</span> {r.surgery.surgery_type || '—'}</div>
                     </div>
+                    {p?.diagnosis && (
+                      <p className="text-xs text-slate-500 mt-2"><span className="text-slate-400">Diagnosis:</span> {p.diagnosis}</p>
+                    )}
                     <p className="text-sm font-medium text-slate-700 mt-2">{r.surgery.procedure_name || 'Untitled procedure'}</p>
                     {r.surgery.procedure_notes && (
                       <p className="text-sm text-slate-500 mt-1 whitespace-pre-wrap">{r.surgery.procedure_notes}</p>
@@ -781,6 +815,94 @@ export default function SurgicalLogbook() {
           )}
         </div>
       )}
+
+      {editingCase && (
+        <LogbookCaseEditor
+          row={editingCase}
+          onClose={() => setEditingCase(null)}
+          onSaved={() => { setEditingCase(null); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Inline case editor opened from the live preview — saves straight to the
+// same `surgeries` row (and the linked patient's `diagnosis`) that the
+// Patient Details page and the PDF export both read from, so an edit here
+// is immediately visible everywhere else too (no separate copy of the data).
+function LogbookCaseEditor({ row, onClose, onSaved }: { row: LogbookRow; onClose: () => void; onSaved: () => void }) {
+  const { surgery, patient } = row;
+  const [procName, setProcName] = useState(surgery.procedure_name || '');
+  const [procedureCategory, setProcedureCategory] = useState<ProcedureCategory | ''>(surgery.procedure_category || '');
+  const [anaesthesia, setAnaesthesia] = useState(surgery.anaesthesia_type || '');
+  const [procNotes, setProcNotes] = useState(surgery.procedure_notes || '');
+  const [surgeryDate, setSurgeryDate] = useState(surgery.surgery_date ? surgery.surgery_date.substring(0, 10) : '');
+  const [diagnosis, setDiagnosis] = useState(patient?.diagnosis || '');
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    await supabase.from('surgeries').update({
+      procedure_name: procName,
+      procedure_category: procedureCategory || null,
+      anaesthesia_type: anaesthesia,
+      procedure_notes: procNotes,
+      surgery_date: surgeryDate || null,
+    }).eq('id', surgery.id);
+    if (patient) {
+      await supabase.from('patients').update({ diagnosis }).eq('id', patient.id);
+    }
+    setSaving(false);
+    onSaved();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-800">Edit Case</h2>
+            <p className="text-xs text-slate-400">{patient?.patient_name || 'Unknown patient'} ({patient?.unique_id || '—'})</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
+        </div>
+        <form onSubmit={handleSave} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Name</label>
+            <input type="text" value={procName} onChange={(e) => setProcName(e.target.value)} className="form-input" />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-600 mb-1.5">Classification</label>
+              <select value={procedureCategory} onChange={(e) => setProcedureCategory(e.target.value as ProcedureCategory | '')} className="form-input bg-white">
+                <option value="">Select...</option>
+                {SURGERY_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-600 mb-1.5">Anaesthesia</label>
+              <input type="text" value={anaesthesia} onChange={(e) => setAnaesthesia(e.target.value)} className="form-input" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-600 mb-1.5">Surgery Date</label>
+            <input type="date" value={surgeryDate} onChange={(e) => setSurgeryDate(e.target.value)} className="form-input" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-600 mb-1.5">Diagnosis <span className="text-slate-400 font-normal">(saved on the patient record)</span></label>
+            <input type="text" value={diagnosis} onChange={(e) => setDiagnosis(e.target.value)} className="form-input" placeholder="e.g. Right inguinal hernia" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Notes / Intra-op Findings</label>
+            <textarea value={procNotes} onChange={(e) => setProcNotes(e.target.value)} rows={5} className="form-input resize-none" />
+          </div>
+          <button type="submit" disabled={saving} className="w-full py-2.5 bg-sky-600 text-white rounded-lg font-medium hover:bg-sky-700 transition disabled:opacity-60">
+            {saving ? 'Saving...' : 'Save Changes'}
+          </button>
+        </form>
+      </div>
     </div>
   );
 }

@@ -26,7 +26,13 @@ export default function PatientForm({ hospitals, editPatient, onDone, onCancel, 
   const [mobileNumber, setMobileNumber] = useState(editPatient?.mobile_number || '');
   const [fees, setFees] = useState(editPatient?.fees?.toString() || '');
 
-  const [patientType, setPatientType] = useState<'op' | 'ip' | 'opinion' | null>(editPatient?.patient_type || defaultPatientType || null);
+  // Legacy patients saved before patient_type existed have it as null — fall
+  // back to 'op' when editing one so the details section isn't hidden and
+  // the save button isn't stuck disabled (see handleSubmit's patientType
+  // guard below). New/unsaved entries still start with no type selected.
+  const [patientType, setPatientType] = useState<'op' | 'ip' | 'opinion' | null>(
+    editPatient?.patient_type || defaultPatientType || (editPatient ? 'op' : null)
+  );
 
   const [admissionDate, setAdmissionDate] = useState(editPatient?.admission_date || '');
   const [dischargeDate, setDischargeDate] = useState(editPatient?.discharge_date || '');
@@ -175,7 +181,7 @@ export default function PatientForm({ hospitals, editPatient, onDone, onCancel, 
           </div>
         )}
 
-        {(patientType === 'op' || patientType === 'ip' || patientType === 'opinion') && (
+        {(patientType === 'op' || patientType === 'ip' || patientType === 'opinion' || !!editPatient) && (
           <div className="pt-4 border-t border-slate-100 space-y-4">
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
               {patientType === 'ip' ? 'IP Details' : patientType === 'opinion' ? 'Opinion Details' : 'OP Details'}
