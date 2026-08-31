@@ -4,15 +4,17 @@ import { useAuth } from '@/lib/auth';
 import { Hospital, MonthlyEntry, Attendance, Patient, ClassEntry, Payment, Surgery } from '@/lib/types';
 import { formatDate, uploadImage, ensurePresentAttendance } from '@/lib/helpers';
 import { getColSummary } from '@/lib/col';
-import { buildHospitalSummaries } from '@/lib/hospitalSummary';
+import { buildHospitalSummaries, LEAVE_BREAKDOWN_KEYS } from '@/lib/hospitalSummary';
+import { AttendanceChoiceState, defaultAttendanceChoiceState, validateAttendanceChoice, buildAttendanceFields } from '@/lib/attendance';
 import {
-  Building2, Plus, Trash2, X, Calendar, Pencil, Clock, CheckCircle2, LogOut, Zap, Search,
+  Building2, Plus, Trash2, X, Calendar, Pencil, Clock, Search,
   UserRound, Stethoscope, ArrowRight, GraduationCap, Upload, ArrowLeft, ChevronLeft, ChevronRight, Award,
 } from 'lucide-react';
 import PatientForm from './PatientForm';
 import PatientRegistrationWizard from './PatientRegistrationWizard';
 import HospitalDailyTable from './HospitalDailyTable';
 import EditDayModal from './EditDayModal';
+import AttendanceStatusPicker from './AttendanceStatusPicker';
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -66,11 +68,7 @@ export default function Hospitals() {
   // Attendance form
   const [attHospital, setAttHospital] = useState('');
   const [attDate, setAttDate] = useState(new Date().toISOString().split('T')[0]);
-  const [attStatus, setAttStatus] = useState<'present' | 'leave' | 'extra_duty'>('present');
-  const [attDutyType, setAttDutyType] = useState<'normal' | 'duty'>('normal');
-  const [attLeaveType, setAttLeaveType] = useState('');
-  const [attCompensatedDate, setAttCompensatedDate] = useState('');
-  const [attExtraType, setAttExtraType] = useState('');
+  const [attState, setAttState] = useState<AttendanceChoiceState>(defaultAttendanceChoiceState());
   const [attNotes, setAttNotes] = useState('');
   const [attError, setAttError] = useState<string | null>(null);
 
@@ -168,8 +166,7 @@ export default function Hospitals() {
 
   const resetAttendanceForm = () => {
     setAttHospital(''); setAttDate(new Date().toISOString().split('T')[0]);
-    setAttStatus('present'); setAttDutyType('normal');
-    setAttLeaveType(''); setAttCompensatedDate(''); setAttExtraType(''); setAttNotes('');
+    setAttState(defaultAttendanceChoiceState()); setAttNotes('');
     setAttError(null);
   };
 
@@ -177,8 +174,8 @@ export default function Hospitals() {
     e.preventDefault();
     setAttError(null);
     if (!attHospital) { setAttError('Please select a hospital.'); return; }
-    if (attStatus === 'leave' && !attLeaveType.trim()) { setAttError('Please enter the type of leave.'); return; }
-    if (attStatus === 'extra_duty' && !attExtraType.trim()) { setAttError('Please enter the extra duty type.'); return; }
+    const validationError = validateAttendanceChoice(attState);
+    if (validationError) { setAttError(validationError); return; }
     if (!user) { setAttError('You must be signed in to add attendance.'); return; }
 
     // Only one attendance record per hospital+date is allowed — if one
@@ -196,11 +193,7 @@ export default function Hospitals() {
       user_id: user.id,
       hospital_id: attHospital,
       attendance_date: attDate,
-      status: attStatus,
-      duty_type: attStatus === 'present' ? attDutyType : null,
-      leave_type: attStatus === 'leave' ? attLeaveType.trim() : null,
-      compensated_working_date: attStatus === 'leave' && attCompensatedDate ? attCompensatedDate : null,
-      extra_duty_type: attStatus === 'extra_duty' ? attExtraType.trim() : null,
+      ...buildAttendanceFields(attState),
       notes: attNotes,
     };
     const { error } = await supabase.from('attendance').upsert(payload, { onConflict: 'user_id,hospital_id,attendance_date' });
@@ -611,11 +604,16 @@ export default function Hospitals() {
                     </div>
                   </div>
                   <div>
-                    <p className="text-[10px] font-medium text-slate-400 uppercase mb-1.5">Total Leaves ({hs.leaveBreakdown.cl + hs.leaveBreakdown.col + hs.leaveBreakdown.other})</p>
-                    <div className="grid grid-cols-3 gap-1 text-center">
-                      <div><p className="text-sm font-bold text-red-700">{hs.leaveBreakdown.cl}</p><p className="text-[9px] text-slate-400">CL</p></div>
-                      <div><p className="text-sm font-bold text-amber-700">{hs.leaveBreakdown.col}</p><p className="text-[9px] text-slate-400">COL</p></div>
-                      <div><p className="text-sm font-bold text-slate-600">{hs.leaveBreakdown.other}</p><p className="text-[9px] text-slate-400">Other</p></div>
+                    <p className="text-[10px] font-medium text-slate-400 uppercase mb-1.5">
+                      Total Leaves ({LEAVE_BREAKDOWN_KEYS.reduce((s, k) => s + hs.leaveBreakdown[k.key], 0)})
+                    </p>
+                    <div className="grid grid-cols-6 gap-1 text-center">
+                      {LEAVE_BREAKDOWN_KEYS.map((k) => (
+                        <div key={k.key}>
+                          <p className={`text-sm font-bold ${k.key === 'col' ? 'text-amber-700' : k.key === 'other' ? 'text-slate-600' : 'text-red-700'}`}>{hs.leaveBreakdown[k.key]}</p>
+                          <p className="text-[9px] text-slate-400">{k.label}</p>
+                        </div>
+                      ))}
                     </div>
                   </div>
                   <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
@@ -655,6 +653,7 @@ export default function Hospitals() {
           date={editDayModal.date}
           existingEntry={entries.find((me) => me.hospital_id === editDayModal.hospitalId && (me.entry_date || me.month).substring(0, 10) === editDayModal.date) || null}
           existingAttendance={attendance.find((a) => a.hospital_id === editDayModal.hospitalId && a.attendance_date === editDayModal.date) || null}
+          attendance={attendance}
           userId={user!.id}
           onClose={() => setEditDayModal(null)}
           onSaved={() => { setEditDayModal(null); load(); }}
@@ -768,67 +767,7 @@ export default function Hospitals() {
               <label htmlFor="att-date" className="block text-sm font-medium text-slate-600 mb-1.5">Date *</label>
               <input id="att-date" name="attendanceDate" type="date" required value={attDate} onChange={(e) => setAttDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" />
             </div>
-            <div>
-              <span className="block text-sm font-medium text-slate-600 mb-1.5">Status *</span>
-              <div className="grid grid-cols-3 gap-2">
-                <button type="button" onClick={() => setAttStatus('present')} className={`flex flex-col items-center gap-1.5 p-3 rounded-lg border-2 transition ${attStatus === 'present' ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200 hover:border-slate-300'}`}>
-                  <CheckCircle2 className={`w-5 h-5 ${attStatus === 'present' ? 'text-emerald-600' : 'text-slate-400'}`} />
-                  <span className="text-xs font-medium text-slate-700">Present</span>
-                </button>
-                <button type="button" onClick={() => setAttStatus('leave')} className={`flex flex-col items-center gap-1.5 p-3 rounded-lg border-2 transition ${attStatus === 'leave' ? 'border-red-500 bg-red-50' : 'border-slate-200 hover:border-slate-300'}`}>
-                  <LogOut className={`w-5 h-5 ${attStatus === 'leave' ? 'text-red-600' : 'text-slate-400'}`} />
-                  <span className="text-xs font-medium text-slate-700">Leave</span>
-                </button>
-                <button type="button" onClick={() => setAttStatus('extra_duty')} className={`flex flex-col items-center gap-1.5 p-3 rounded-lg border-2 transition ${attStatus === 'extra_duty' ? 'border-amber-500 bg-amber-50' : 'border-slate-200 hover:border-slate-300'}`}>
-                  <Zap className={`w-5 h-5 ${attStatus === 'extra_duty' ? 'text-amber-600' : 'text-slate-400'}`} />
-                  <span className="text-xs font-medium text-slate-700">Extra Duty</span>
-                </button>
-              </div>
-            </div>
-            {attStatus === 'present' && (
-              <div>
-                <span className="block text-sm font-medium text-slate-600 mb-1.5">Duty Type</span>
-                <div className="flex gap-2">
-                  <button type="button" onClick={() => setAttDutyType('normal')} className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition ${attDutyType === 'normal' ? 'bg-sky-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
-                    Normal Duty
-                  </button>
-                  <button type="button" onClick={() => setAttDutyType('duty')} className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition ${attDutyType === 'duty' ? 'bg-sky-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
-                    Duty
-                  </button>
-                </div>
-              </div>
-            )}
-            {attStatus === 'leave' && (
-              <div>
-                <label htmlFor="att-leave-type" className="block text-sm font-medium text-slate-600 mb-1.5">Type of Leave *</label>
-                <input id="att-leave-type" name="leaveType" type="text" required value={attLeaveType} onChange={(e) => setAttLeaveType(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="e.g. Casual, Sick, Earned..." />
-              </div>
-            )}
-            {attStatus === 'leave' && colSummary.availableDates.length > 0 && (
-              <div>
-                <label htmlFor="att-compensated-date" className="block text-sm font-medium text-slate-600 mb-1.5">Compensates COL credit (optional)</label>
-                <select id="att-compensated-date" name="compensatedDate" value={attCompensatedDate} onChange={(e) => setAttCompensatedDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none bg-white">
-                  <option value="">Not a COL leave</option>
-                  {colSummary.availableDates.map((c) => (
-                    <option key={c.date} value={c.date}>{formatDate(c.date)}</option>
-                  ))}
-                </select>
-                <p className="text-xs text-slate-400 mt-1">Only showing COL credits earned at the hospital selected above — COL can only be redeemed at the same hospital it was earned.</p>
-              </div>
-            )}
-            {attStatus === 'extra_duty' && (
-              <div>
-                <label htmlFor="att-extra-type" className="block text-sm font-medium text-slate-600 mb-1.5">Extra Duty Type *</label>
-                <div className="flex gap-2 mb-2">
-                  {['extra', 'col', 'others'].map((t) => (
-                    <button key={t} type="button" onClick={() => setAttExtraType(t)} className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${attExtraType === t ? 'bg-amber-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
-                      {t === 'col' ? 'COL' : t.charAt(0).toUpperCase() + t.slice(1)}
-                    </button>
-                  ))}
-                </div>
-                <input id="att-extra-type" name="extraDutyType" type="text" value={attExtraType} onChange={(e) => setAttExtraType(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="Or type your own..." />
-              </div>
-            )}
+            <AttendanceStatusPicker value={attState} onChange={setAttState} colAvailableDates={colSummary.availableDates} size="full" />
             <div>
               <label htmlFor="att-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
               <input id="att-notes" name="notes" type="text" value={attNotes} onChange={(e) => setAttNotes(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="Optional..." />

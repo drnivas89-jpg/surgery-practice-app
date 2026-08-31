@@ -121,3 +121,39 @@ export function getColSummary(attendance: Attendance[], hospitalId?: string): Co
     usage: usage.sort((a, b) => a.leaveDate.localeCompare(b.leaveDate)),
   };
 }
+
+export interface ColYearBucket {
+  year: number;
+  creditedCount: number;
+  usedCount: number;
+  creditDates: (ColCreditDate & { used: boolean })[];
+}
+
+// Pure reshaping of an already-computed ColSummary into year-grouped
+// buckets for the COL Dashboard's hospital-wise, per-year drill-down. Does
+// NOT recompute or re-match anything — grouping only — so results can
+// never disagree with getColSummary's own accrued/redeemed/available.
+export function groupColByYear(summary: ColSummary): ColYearBucket[] {
+  const availableIds = new Set(summary.availableDates.map((d) => d.attendanceId));
+  const byYear = new Map<number, ColYearBucket>();
+  const ensure = (year: number) => {
+    let bucket = byYear.get(year);
+    if (!bucket) {
+      bucket = { year, creditedCount: 0, usedCount: 0, creditDates: [] };
+      byYear.set(year, bucket);
+    }
+    return bucket;
+  };
+
+  summary.creditDates.forEach((c) => {
+    const year = Number(c.date.substring(0, 4));
+    const bucket = ensure(year);
+    bucket.creditedCount++;
+    bucket.creditDates.push({ ...c, used: !availableIds.has(c.attendanceId) });
+  });
+  summary.usage.forEach((u) => {
+    ensure(Number(u.leaveDate.substring(0, 4))).usedCount++;
+  });
+
+  return Array.from(byYear.values()).sort((a, b) => b.year - a.year);
+}

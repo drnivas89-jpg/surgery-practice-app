@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Attendance, MonthlyEntry } from '@/lib/types';
 import { formatDate } from '@/lib/helpers';
+import { getColSummary } from '@/lib/col';
+import { AttendanceChoiceState, attendanceToChoiceState, validateAttendanceChoice, buildAttendanceFields } from '@/lib/attendance';
+import AttendanceStatusPicker from './AttendanceStatusPicker';
 import { X } from 'lucide-react';
-
-type AttStatusChoice = 'present' | 'duty' | 'leave' | 'extra_duty';
 
 interface Props {
   hospitalId: string;
@@ -12,6 +13,7 @@ interface Props {
   date: string;
   existingEntry: MonthlyEntry | null;
   existingAttendance: Attendance | null;
+  attendance: Attendance[];
   userId: string;
   onClose: () => void;
   onSaved: () => void;
@@ -21,22 +23,17 @@ interface Props {
 // Hospitals page and Reports page date-wise drill-down tables (and
 // previously the Dashboard's, before that view was simplified). Upserts
 // both monthly_entries and attendance for the date in one save.
-export default function EditDayModal({ hospitalId, hospitalName, date, existingEntry, existingAttendance, userId, onClose, onSaved }: Props) {
+export default function EditDayModal({ hospitalId, hospitalName, date, existingEntry, existingAttendance, attendance, userId, onClose, onSaved }: Props) {
   const [op, setOp] = useState(existingEntry?.op_patients?.toString() || '');
   const [opinion, setOpinion] = useState(existingEntry?.opinion_patients?.toString() || '');
   const [feesGen, setFeesGen] = useState(existingEntry?.fees_generated?.toString() || '');
   const [feesRec, setFeesRec] = useState(existingEntry?.fees_received?.toString() || '');
-  const initialStatus: AttStatusChoice = existingAttendance
-    ? existingAttendance.status === 'present'
-      ? (existingAttendance.duty_type === 'duty' ? 'duty' : 'present')
-      : existingAttendance.status === 'leave' ? 'leave' : 'extra_duty'
-    : 'present';
-  const [attStatus, setAttStatus] = useState<AttStatusChoice>(initialStatus);
-  const [leaveType, setLeaveType] = useState(existingAttendance?.leave_type || '');
-  const [extraType, setExtraType] = useState(existingAttendance?.extra_duty_type || '');
   const [recordAttendance, setRecordAttendance] = useState(!!existingAttendance);
+  const [attState, setAttState] = useState<AttendanceChoiceState>(attendanceToChoiceState(existingAttendance));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const colSummary = useMemo(() => getColSummary(attendance, hospitalId), [attendance, hospitalId]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -58,17 +55,13 @@ export default function EditDayModal({ hospitalId, hospitalName, date, existingE
     if (entryError) { setError(entryError.message); setSaving(false); return; }
 
     if (recordAttendance) {
-      if (attStatus === 'leave' && !leaveType.trim()) { setError('Please enter the type of leave.'); setSaving(false); return; }
-      if (attStatus === 'extra_duty' && !extraType.trim()) { setError('Please enter the extra duty type.'); setSaving(false); return; }
+      const validationError = validateAttendanceChoice(attState);
+      if (validationError) { setError(validationError); setSaving(false); return; }
       const attPayload = {
         user_id: userId,
         hospital_id: hospitalId,
         attendance_date: date,
-        status: attStatus === 'duty' ? 'present' : attStatus,
-        duty_type: attStatus === 'present' ? 'normal' : attStatus === 'duty' ? 'duty' : null,
-        leave_type: attStatus === 'leave' ? leaveType.trim() : null,
-        extra_duty_type: attStatus === 'extra_duty' ? extraType.trim() : null,
-        compensated_working_date: existingAttendance?.compensated_working_date || null,
+        ...buildAttendanceFields(attState),
         notes: existingAttendance?.notes || '',
       };
       const { error: attError } = await supabase.from('attendance').upsert(attPayload, { onConflict: 'user_id,hospital_id,attendance_date' });
@@ -118,26 +111,7 @@ export default function EditDayModal({ hospitalId, hospitalName, date, existingE
               <span className="text-sm font-medium text-slate-600">Record attendance for this date</span>
             </label>
             {recordAttendance && (
-              <div className="space-y-3">
-                <div className="grid grid-cols-4 gap-1.5">
-                  {(['present', 'duty', 'leave', 'extra_duty'] as AttStatusChoice[]).map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => setAttStatus(s)}
-                      className={`py-2 rounded-lg text-xs font-medium transition ${attStatus === s ? 'bg-sky-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-                    >
-                      {s === 'present' ? 'Present' : s === 'duty' ? 'Duty' : s === 'leave' ? 'Leave' : 'Extra Duty'}
-                    </button>
-                  ))}
-                </div>
-                {attStatus === 'leave' && (
-                  <input type="text" value={leaveType} onChange={(e) => setLeaveType(e.target.value)} className="form-input" placeholder="Type of leave (e.g. Casual, Sick)" />
-                )}
-                {attStatus === 'extra_duty' && (
-                  <input type="text" value={extraType} onChange={(e) => setExtraType(e.target.value)} className="form-input" placeholder="Extra duty type (e.g. extra, col, others)" />
-                )}
-              </div>
+              <AttendanceStatusPicker value={attState} onChange={setAttState} colAvailableDates={colSummary.availableDates} size="compact" />
             )}
           </div>
 

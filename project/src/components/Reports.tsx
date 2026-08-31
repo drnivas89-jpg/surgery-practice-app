@@ -3,7 +3,7 @@ import { supabase } from '@/lib/supabase';
 import { Hospital, MonthlyEntry, Surgery, Patient, Attendance, Payment } from '@/lib/types';
 import { formatCurrency, formatDate } from '@/lib/helpers';
 import { getColSummary } from '@/lib/col';
-import { buildHospitalSummaries, HospitalSummary, SURGERY_CATEGORIES } from '@/lib/hospitalSummary';
+import { buildHospitalSummaries, HospitalSummary, SURGERY_CATEGORIES, LEAVE_BREAKDOWN_KEYS, LeaveBreakdown } from '@/lib/hospitalSummary';
 import HospitalDailyTable from './HospitalDailyTable';
 import EditDayModal from './EditDayModal';
 import { useAuth } from '@/lib/auth';
@@ -166,9 +166,10 @@ export default function Reports() {
   }), { op: 0, ip: 0, opinion: 0 });
   const globalSurgeryCategories = SURGERY_CATEGORIES.reduce((acc, c) => ({ ...acc, [c]: 0 }), {} as Record<typeof SURGERY_CATEGORIES[number], number>);
   activeSummaries.forEach((hs) => SURGERY_CATEGORIES.forEach((c) => { globalSurgeryCategories[c] += hs.surgeryCategories[c]; }));
-  const globalLeave = activeSummaries.reduce((acc, hs) => ({
-    cl: acc.cl + hs.leaveBreakdown.cl, col: acc.col + hs.leaveBreakdown.col, other: acc.other + hs.leaveBreakdown.other,
-  }), { cl: 0, col: 0, other: 0 });
+  const globalLeave: LeaveBreakdown = activeSummaries.reduce((acc, hs) => {
+    LEAVE_BREAKDOWN_KEYS.forEach((k) => { acc[k.key] += hs.leaveBreakdown[k.key]; });
+    return acc;
+  }, { cl: 0, weekOff: 0, medical: 0, pdo: 0, col: 0, other: 0 } as LeaveBreakdown);
   const globalCol = getColSummary(attendance);
   const globalFees = activeSummaries.reduce((acc, hs) => ({
     generated: acc.generated + hs.feesGenerated, received: acc.received + hs.feesReceived, pending: acc.pending + hs.overallPending,
@@ -217,22 +218,22 @@ export default function Reports() {
       ['Metric', 'Value'],
       ['OP', globalCensus.op], ['IP', globalCensus.ip], ['Opinion', globalCensus.opinion],
       ['Surgeries', totalSurgeries],
-      ['Leave — CL', globalLeave.cl], ['Leave — COL', globalLeave.col], ['Leave — Other', globalLeave.other],
+      ...LEAVE_BREAKDOWN_KEYS.map((k) => [`Leave — ${k.label}`, globalLeave[k.key]]),
       ['COL Accrued', globalCol.accrued], ['COL Redeemed', globalCol.redeemed], ['COL Available', globalCol.available],
       ['Fees Generated', globalFees.generated], ['Fees Received', globalFees.received], ['Fees Pending', globalFees.pending],
     ];
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summaryRows), 'Summary');
 
     const hospitalRows = [
-      ['Hospital', 'OP', 'IP', 'Opinion', 'Surgeries', 'Present', 'Duties', 'CL', 'COL', 'Other Leave', 'COL Accrued', 'COL Available', 'Fees Generated', 'Fees Received', 'Pending'],
+      ['Hospital', 'OP', 'IP', 'Opinion', 'Surgeries', 'Present', 'Duties', ...LEAVE_BREAKDOWN_KEYS.map((k) => k.label), 'COL Accrued', 'COL Available', 'Fees Generated', 'Fees Received', 'Pending'],
       ...activeSummaries.map((hs) => [
         hs.hospital.name, hs.opCount, hs.ipCount, hs.opinionCount, hs.surgeriesCount, hs.present, hs.dutyCount,
-        hs.leaveBreakdown.cl, hs.leaveBreakdown.col, hs.leaveBreakdown.other, hs.colAccrued, hs.colAvailable,
+        ...LEAVE_BREAKDOWN_KEYS.map((k) => hs.leaveBreakdown[k.key]), hs.colAccrued, hs.colAvailable,
         hs.feesGenerated, hs.feesReceived, hs.overallPending,
       ]),
     ];
     const hospitalSheet = XLSX.utils.aoa_to_sheet(hospitalRows);
-    hospitalSheet['!cols'] = Array(15).fill({ wch: 13 });
+    hospitalSheet['!cols'] = Array(7 + LEAVE_BREAKDOWN_KEYS.length + 5).fill({ wch: 13 });
     XLSX.utils.book_append_sheet(wb, hospitalSheet, 'Hospital-wise');
 
     if (level === 'hospital' && selectedHospitalSummary) {
@@ -281,7 +282,7 @@ export default function Reports() {
         : selectedMetric === 'surgery'
         ? [{ label: 'Hospital', width: 130 }, ...SURGERY_CATEGORIES.map((c) => ({ label: c, width: 55, align: 'right' as const }))]
         : selectedMetric === 'leave'
-        ? [{ label: 'Hospital', width: 150 }, { label: 'CL', width: 60, align: 'right' as const }, { label: 'COL', width: 60, align: 'right' as const }, { label: 'Other', width: 60, align: 'right' as const }]
+        ? [{ label: 'Hospital', width: 130 }, ...LEAVE_BREAKDOWN_KEYS.map((k) => ({ label: k.label, width: 55, align: 'right' as const }))]
         : selectedMetric === 'col'
         ? [{ label: 'Hospital', width: 150 }, { label: 'Accrued', width: 70, align: 'right' as const }, { label: 'Redeemed', width: 70, align: 'right' as const }, { label: 'Available', width: 70, align: 'right' as const }]
         : [{ label: 'Hospital', width: 130 }, { label: 'Generated', width: 80, align: 'right' as const }, { label: 'Received', width: 80, align: 'right' as const }, { label: 'Pending', width: 80, align: 'right' as const }];
@@ -290,7 +291,7 @@ export default function Reports() {
         : selectedMetric === 'surgery'
         ? [hs.hospital.name, ...SURGERY_CATEGORIES.map((c) => hs.surgeryCategories[c])]
         : selectedMetric === 'leave'
-        ? [hs.hospital.name, hs.leaveBreakdown.cl, hs.leaveBreakdown.col, hs.leaveBreakdown.other]
+        ? [hs.hospital.name, ...LEAVE_BREAKDOWN_KEYS.map((k) => hs.leaveBreakdown[k.key])]
         : selectedMetric === 'col'
         ? [hs.hospital.name, hs.colAccrued, hs.colRedeemed, hs.colAvailable]
         : [hs.hospital.name, formatCurrency(hs.feesGenerated), formatCurrency(hs.feesReceived), formatCurrency(hs.overallPending)]
@@ -305,12 +306,12 @@ export default function Reports() {
       subtitle: rangeLabel,
       columns: [
         { label: 'Hospital', width: 110 }, { label: 'OP', width: 35, align: 'right' }, { label: 'IP', width: 35, align: 'right' }, { label: 'Opinion', width: 50, align: 'right' },
-        { label: 'Surgeries', width: 55, align: 'right' }, { label: 'CL/COL/Other', width: 80, align: 'right' },
+        { label: 'Surgeries', width: 55, align: 'right' }, { label: 'Leave (CL/WO/Med/PDO/COL/Oth)', width: 110, align: 'right' },
         { label: 'Fees Gen.', width: 65, align: 'right' }, { label: 'Fees Rec.', width: 65, align: 'right' }, { label: 'Pending', width: 65, align: 'right' },
       ],
       rows: activeSummaries.map((hs) => [
         hs.hospital.name, hs.opCount, hs.ipCount, hs.opinionCount, hs.surgeriesCount,
-        `${hs.leaveBreakdown.cl}/${hs.leaveBreakdown.col}/${hs.leaveBreakdown.other}`,
+        LEAVE_BREAKDOWN_KEYS.map((k) => hs.leaveBreakdown[k.key]).join('/'),
         formatCurrency(hs.feesGenerated), formatCurrency(hs.feesReceived), formatCurrency(hs.overallPending),
       ]),
     });
@@ -397,10 +398,13 @@ export default function Reports() {
                   </div>
                 )}
                 {m.id === 'leave' && (
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <div><p className="text-xl font-bold text-red-700">{globalLeave.cl}</p><p className="text-[11px] text-slate-400">CL</p></div>
-                    <div><p className="text-xl font-bold text-amber-700">{globalLeave.col}</p><p className="text-[11px] text-slate-400">COL</p></div>
-                    <div><p className="text-xl font-bold text-slate-600">{globalLeave.other}</p><p className="text-[11px] text-slate-400">Other</p></div>
+                  <div className="grid grid-cols-6 gap-1 text-center">
+                    {LEAVE_BREAKDOWN_KEYS.map((k) => (
+                      <div key={k.key}>
+                        <p className={`text-lg font-bold ${k.key === 'col' ? 'text-amber-700' : k.key === 'other' ? 'text-slate-600' : 'text-red-700'}`}>{globalLeave[k.key]}</p>
+                        <p className="text-[9px] text-slate-400">{k.label}</p>
+                      </div>
+                    ))}
                   </div>
                 )}
                 {m.id === 'col' && (
@@ -446,10 +450,13 @@ export default function Reports() {
                   </div>
                 )}
                 {selectedMetric === 'leave' && (
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <div><p className="text-lg font-bold text-red-700">{hs.leaveBreakdown.cl}</p><p className="text-[10px] text-slate-400">CL</p></div>
-                    <div><p className="text-lg font-bold text-amber-700">{hs.leaveBreakdown.col}</p><p className="text-[10px] text-slate-400">COL</p></div>
-                    <div><p className="text-lg font-bold text-slate-600">{hs.leaveBreakdown.other}</p><p className="text-[10px] text-slate-400">Other</p></div>
+                  <div className="grid grid-cols-6 gap-1 text-center">
+                    {LEAVE_BREAKDOWN_KEYS.map((k) => (
+                      <div key={k.key}>
+                        <p className={`text-sm font-bold ${k.key === 'col' ? 'text-amber-700' : k.key === 'other' ? 'text-slate-600' : 'text-red-700'}`}>{hs.leaveBreakdown[k.key]}</p>
+                        <p className="text-[8px] text-slate-400">{k.label}</p>
+                      </div>
+                    ))}
                   </div>
                 )}
                 {selectedMetric === 'col' && (
@@ -488,6 +495,7 @@ export default function Reports() {
           date={editDayModal.date}
           existingEntry={monthlyEntries.find((me) => me.hospital_id === editDayModal.hospitalId && (me.entry_date || me.month).substring(0, 10) === editDayModal.date) || null}
           existingAttendance={attendance.find((a) => a.hospital_id === editDayModal.hospitalId && a.attendance_date === editDayModal.date) || null}
+          attendance={attendance}
           userId={user!.id}
           onClose={() => setEditDayModal(null)}
           onSaved={() => { setEditDayModal(null); load(); }}

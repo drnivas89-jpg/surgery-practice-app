@@ -594,6 +594,7 @@ export default function PatientRegistrationWizard({ hospitals, defaultHospitalId
       {newAttendanceId && (
         <PresentDutyPrompt
           attendanceId={newAttendanceId}
+          hospitalId={hospitalId}
           hospitalName={hospitals.find((h) => h.id === hospitalId)?.name}
           onClose={() => { setNewAttendanceId(null); onDone(); }}
         />

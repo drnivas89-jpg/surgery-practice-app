@@ -44,6 +44,12 @@ export interface Patient {
   hospital?: Hospital;
 }
 
+// leave_type values written going forward use these fixed slugs; rows
+// saved before this convention existed may still hold legacy free text
+// (e.g. "Sick", "Earned") — classifyLeave() in hospitalSummary.ts handles
+// both via substring fallback matching.
+export type LeaveTypeSlug = 'casual' | 'week_off' | 'medical' | 'pdo' | 'col';
+
 export interface Attendance {
   id: string;
   user_id: string;
@@ -51,6 +57,7 @@ export interface Attendance {
   attendance_date: string;
   status: 'present' | 'leave' | 'extra_duty';
   duty_type: 'normal' | 'duty' | null;
+  duty_subtype: string | null;
   compensated_working_date: string | null;
   leave_type: string | null;
   extra_duty_type: string | null;

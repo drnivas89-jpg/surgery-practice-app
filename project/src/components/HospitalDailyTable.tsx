@@ -5,14 +5,14 @@ import { Pencil, Trash2, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide
 
 export type { DailyRow };
 
-const STATUS_FILTERS = ['All', 'Present', 'Duty', 'Leave', 'Extra Duty', 'Missing', 'Zero Activity'] as const;
+const STATUS_FILTERS = ['All', 'Present', '24 Hrs Duty', 'Leave', 'Extra Duty', 'Missing', 'Zero Activity'] as const;
 type StatusFilter = typeof STATUS_FILTERS[number];
 
 const PAGE_SIZE = 12;
 
 function statusBadgeClass(label: string): string {
   if (label === 'Present') return 'bg-emerald-50 text-emerald-700';
-  if (label === 'Duty') return 'bg-sky-50 text-sky-700';
+  if (label === '24 Hrs Duty') return 'bg-sky-50 text-sky-700';
   if (label.startsWith('Leave')) return 'bg-red-50 text-red-700';
   if (label === 'Extra Duty') return 'bg-amber-50 text-amber-700';
   return 'bg-slate-100 text-slate-600';

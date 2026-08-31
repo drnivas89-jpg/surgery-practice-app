@@ -276,6 +276,7 @@ export default function PatientForm({ hospitals, editPatient, onDone, onCancel, 
       {newAttendanceId && (
         <PresentDutyPrompt
           attendanceId={newAttendanceId}
+          hospitalId={hospitalId}
           hospitalName={hospitals.find((h) => h.id === hospitalId)?.name}
           onClose={() => { setNewAttendanceId(null); onDone(); }}
         />

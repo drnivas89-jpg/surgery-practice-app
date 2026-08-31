@@ -20,13 +20,30 @@ function emptyCategoryCounts(): Record<SurgeryCategory, number> {
   return SURGERY_CATEGORIES.reduce((acc, c) => ({ ...acc, [c]: 0 }), {} as Record<SurgeryCategory, number>);
 }
 
-export interface LeaveBreakdown { cl: number; col: number; other: number; }
+export interface LeaveBreakdown { cl: number; weekOff: number; medical: number; pdo: number; col: number; other: number; }
 
-// A leave row is COL if it redeemed a compensated_working_date, CL if its
-// free-text leave_type says "casual", otherwise Other.
+export const LEAVE_BREAKDOWN_KEYS: { key: keyof LeaveBreakdown; label: string }[] = [
+  { key: 'cl', label: 'CL' },
+  { key: 'weekOff', label: 'Week Off' },
+  { key: 'medical', label: 'Medical' },
+  { key: 'pdo', label: 'PDO' },
+  { key: 'col', label: 'COL' },
+  { key: 'other', label: 'Other' },
+];
+
+// A leave row is COL if it redeemed a compensated_working_date or its
+// leave_type is the 'col' slug; otherwise matched against the fixed
+// leave-type slugs written going forward (casual/week_off/medical/pdo),
+// with substring fallbacks so legacy free text (e.g. "Sick", "Casual")
+// still lands in a sensible bucket instead of always falling to Other.
 export function classifyLeave(a: Attendance): keyof LeaveBreakdown {
   if (a.compensated_working_date) return 'col';
-  if ((a.leave_type || '').toLowerCase().includes('casual')) return 'cl';
+  const t = (a.leave_type || '').toLowerCase();
+  if (t === 'col') return 'col';
+  if (t === 'casual' || t.includes('casual')) return 'cl';
+  if (t === 'week_off' || t.includes('week off') || t.includes('weekoff') || t.includes('week-off')) return 'weekOff';
+  if (t === 'medical' || t.includes('medical') || t.includes('sick')) return 'medical';
+  if (t === 'pdo') return 'pdo';
   return 'other';
 }
 
@@ -171,7 +188,7 @@ export function buildHospitalSummaries(params: BuildHospitalSummariesParams): Ho
     const leaves = hospAtt.filter((a) => a.status === 'leave');
     const extraDuties = hospAtt.filter((a) => a.status === 'extra_duty');
 
-    const leaveBreakdown: LeaveBreakdown = { cl: 0, col: 0, other: 0 };
+    const leaveBreakdown: LeaveBreakdown = { cl: 0, weekOff: 0, medical: 0, pdo: 0, col: 0, other: 0 };
     leaves.forEach((l) => { leaveBreakdown[classifyLeave(l)]++; });
 
     // COL is a running balance, not reset by the range filter — scoped to
@@ -199,9 +216,9 @@ export function buildHospitalSummaries(params: BuildHospitalSummariesParams): Ho
         const attRow = d.attendance[0] || null;
         const attendanceStatusLabel = attRow
           ? attRow.status === 'present'
-            ? (attRow.duty_type === 'duty' ? 'Duty' : 'Present')
+            ? (attRow.duty_type === 'duty' ? '24 Hrs Duty' : 'Present')
             : attRow.status === 'leave'
-            ? `Leave (${classifyLeave(attRow) === 'cl' ? 'CL' : classifyLeave(attRow) === 'col' ? 'COL' : 'Other'})`
+            ? `Leave (${LEAVE_BREAKDOWN_KEYS.find((k) => k.key === classifyLeave(attRow))?.label || 'Other'})`
             : 'Extra Duty'
           : null;
         const dayOp = d.entry?.op_patients || 0;

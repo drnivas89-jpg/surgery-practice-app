@@ -1124,6 +1124,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
       {newAttendanceId && (
         <PresentDutyPrompt
           attendanceId={newAttendanceId}
+          hospitalId={patient.hospital_id}
           hospitalName={patient.hospital?.name}
           onClose={() => setNewAttendanceId(null)}
         />

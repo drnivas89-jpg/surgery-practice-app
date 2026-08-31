@@ -4,7 +4,7 @@ import { useAuth } from '@/lib/auth';
 import { Patient, Hospital, Payment, Surgery, MonthlyEntry, Attendance } from '@/lib/types';
 import { formatDate, formatCurrency, daysUntil } from '@/lib/helpers';
 import { getColSummary } from '@/lib/col';
-import { buildHospitalSummaries, SURGERY_CATEGORIES } from '@/lib/hospitalSummary';
+import { buildHospitalSummaries, SURGERY_CATEGORIES, LEAVE_BREAKDOWN_KEYS, LeaveBreakdown } from '@/lib/hospitalSummary';
 import { View } from './Layout';
 import {
   Calendar, AlertTriangle, Zap, IndianRupee, Users, Activity,
@@ -66,9 +66,10 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const globalSurgeryCategories = SURGERY_CATEGORIES.reduce((acc, c) => ({ ...acc, [c]: 0 }), {} as Record<typeof SURGERY_CATEGORIES[number], number>);
   hospitalSummary.forEach((hs) => SURGERY_CATEGORIES.forEach((c) => { globalSurgeryCategories[c] += hs.surgeryCategories[c]; }));
 
-  const globalLeave = hospitalSummary.reduce((acc, hs) => ({
-    cl: acc.cl + hs.leaveBreakdown.cl, col: acc.col + hs.leaveBreakdown.col, other: acc.other + hs.leaveBreakdown.other,
-  }), { cl: 0, col: 0, other: 0 });
+  const globalLeave: LeaveBreakdown = hospitalSummary.reduce((acc, hs) => {
+    LEAVE_BREAKDOWN_KEYS.forEach((k) => { acc[k.key] += hs.leaveBreakdown[k.key]; });
+    return acc;
+  }, { cl: 0, weekOff: 0, medical: 0, pdo: 0, col: 0, other: 0 } as LeaveBreakdown);
 
   const globalCol = getColSummary(attendance); // all hospitals, all-time
   const globalFees = hospitalSummary.reduce((acc, hs) => ({
@@ -130,10 +131,13 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
 
         <button onClick={() => onNavigate('hospitals')} className="bg-white rounded-xl border border-slate-200 p-5 text-left hover:border-sky-300 hover:shadow-sm transition">
           <div className="flex items-center gap-2 mb-3"><Calendar className="w-4 h-4 text-red-500" /><h2 className="font-semibold text-slate-700">Leave</h2></div>
-          <div className="grid grid-cols-3 gap-2 text-center">
-            <div><p className="text-xl font-bold text-red-700">{globalLeave.cl}</p><p className="text-[11px] text-slate-400">CL</p></div>
-            <div><p className="text-xl font-bold text-amber-700">{globalLeave.col}</p><p className="text-[11px] text-slate-400">COL</p></div>
-            <div><p className="text-xl font-bold text-slate-600">{globalLeave.other}</p><p className="text-[11px] text-slate-400">Other</p></div>
+          <div className="grid grid-cols-6 gap-1 text-center">
+            {LEAVE_BREAKDOWN_KEYS.map((k) => (
+              <div key={k.key}>
+                <p className={`text-base font-bold ${k.key === 'col' ? 'text-amber-700' : k.key === 'other' ? 'text-slate-600' : 'text-red-700'}`}>{globalLeave[k.key]}</p>
+                <p className="text-[9px] text-slate-400">{k.label}</p>
+              </div>
+            ))}
           </div>
         </button>
 
