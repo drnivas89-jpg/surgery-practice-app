@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { Patient, Surgery, FollowUp, FollowUpVisit, Payment, SurgeryType, Investigation, Vitals, ProcedureCategory } from '@/lib/types';
-import { formatDate, formatCurrency, uploadImage, getImageUrl, ensurePresentAttendance } from '@/lib/helpers';
+import { formatDate, formatCurrency, uploadImage, getImageUrl, ensurePresentAttendance, todayLocalDateStr } from '@/lib/helpers';
 import PrescriptionTable, { DEFAULT_PRESCRIPTION } from './PrescriptionTable';
 import PresentDutyPrompt from './PresentDutyPrompt';
 import {
@@ -156,7 +156,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   // this was a brand new attendance row rather than an already-existing one.
   const markPresentFor = async (date: string | null | undefined) => {
     if (!user || !patient) return;
-    const { created, id } = await ensurePresentAttendance(user.id, patient.hospital_id, date || new Date().toISOString().split('T')[0]);
+    const { created, id } = await ensurePresentAttendance(user.id, patient.hospital_id, date || todayLocalDateStr());
     if (created && id) setNewAttendanceId(id);
   };
 

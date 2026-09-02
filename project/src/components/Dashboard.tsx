@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { Patient, Hospital, Payment, Surgery, MonthlyEntry, Attendance } from '@/lib/types';
-import { formatDate, formatCurrency, daysUntil } from '@/lib/helpers';
+import { formatDate, formatCurrency, daysUntil, todayLocalDateStr, monthRangeLocal } from '@/lib/helpers';
 import { getColSummary } from '@/lib/col';
 import { buildHospitalSummaries, SURGERY_CATEGORIES, LEAVE_BREAKDOWN_KEYS, LeaveBreakdown } from '@/lib/hospitalSummary';
 import { View } from './Layout';
@@ -50,9 +50,8 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   }, [user]);
 
   const now = new Date();
-  const todayStr = now.toISOString().substring(0, 10);
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().substring(0, 10);
-  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().substring(0, 10);
+  const todayStr = todayLocalDateStr(now);
+  const { start: monthStart, end: monthEnd } = monthRangeLocal(now.getFullYear(), now.getMonth());
 
   const hospitalSummary = buildHospitalSummaries({
     hospitals, patients, payments, surgeries, monthlyEntries, attendance,

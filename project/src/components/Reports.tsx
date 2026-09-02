@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Hospital, MonthlyEntry, Surgery, Patient, Attendance, Payment } from '@/lib/types';
-import { formatCurrency, formatDate } from '@/lib/helpers';
+import { formatCurrency, formatDate, todayLocalDateStr, monthRangeLocal } from '@/lib/helpers';
 import { getColSummary } from '@/lib/col';
 import { buildHospitalSummaries, HospitalSummary, SURGERY_CATEGORIES, LEAVE_BREAKDOWN_KEYS, LeaveBreakdown } from '@/lib/hospitalSummary';
 import HospitalDailyTable from './HospitalDailyTable';
@@ -125,8 +125,8 @@ export default function Reports() {
   const [editDayModal, setEditDayModal] = useState<{ hospitalId: string; hospitalName: string; date: string } | null>(null);
 
   const now = new Date();
-  const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().substring(0, 10);
-  const defaultEnd = now.toISOString().substring(0, 10);
+  const defaultStart = monthRangeLocal(now.getFullYear(), now.getMonth()).start;
+  const defaultEnd = todayLocalDateStr(now);
   const [startDate, setStartDate] = useState(defaultStart);
   const [endDate, setEndDate] = useState(defaultEnd);
 
@@ -150,7 +150,7 @@ export default function Reports() {
 
   useEffect(() => { load(); }, []);
 
-  const todayStr = now.toISOString().substring(0, 10);
+  const todayStr = todayLocalDateStr(now);
   const rangeStart = startDate || '2000-01-01';
   const rangeEnd = endDate || todayStr;
 
@@ -181,8 +181,8 @@ export default function Reports() {
     const start = new Date();
     start.setMonth(start.getMonth() - (months - 1));
     start.setDate(1);
-    setStartDate(start.toISOString().substring(0, 10));
-    setEndDate(end.toISOString().substring(0, 10));
+    setStartDate(todayLocalDateStr(start));
+    setEndDate(todayLocalDateStr(end));
   };
   const clearFilters = () => { setStartDate(''); setEndDate(''); };
 

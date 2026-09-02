@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { Patient, Hospital } from '@/lib/types';
-import { generateUniquePatientId, upsertDailyEntryCount, ensurePresentAttendance } from '@/lib/helpers';
+import { generateUniquePatientId, upsertDailyEntryCount, ensurePresentAttendance, todayLocalDateStr } from '@/lib/helpers';
 import PrescriptionTable, { DEFAULT_PRESCRIPTION } from './PrescriptionTable';
 import PresentDutyPrompt from './PresentDutyPrompt';
 import { ArrowLeft, Save, AlertCircle, Stethoscope, FlaskConical, UserRound, MessageCircleQuestion, ClipboardCheck, Calendar, Phone } from 'lucide-react';
@@ -58,7 +58,7 @@ export default function PatientForm({ hospitals, editPatient, onDone, onCancel, 
     if (!hospitalId) { setError('Please select a hospital.'); setSaving(false); return; }
     if (!patientType) { setError('Please select OP, IP, or Opinion.'); setSaving(false); return; }
 
-    const today = new Date().toISOString().split('T')[0];
+    const today = todayLocalDateStr();
 
     const payload = {
       hospital_id: hospitalId,

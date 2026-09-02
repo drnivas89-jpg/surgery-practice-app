@@ -128,6 +128,26 @@ export async function getImageUrl(path: string): Promise<string | null> {
   return data?.signedUrl ?? null;
 }
 
+// Formats a Date using its LOCAL year/month/day, never going through
+// toISOString() (which converts to UTC first — for timezones ahead of UTC,
+// e.g. India, that rolls the date back to the previous day for the first
+// few hours after local midnight, silently mis-dating "today" and any
+// month start/end boundary built from it). Every "what's today's date" /
+// "what's the 1st of this month" computation should go through this pair
+// instead of `new Date(...).toISOString().substring(0, 10)`.
+export function todayLocalDateStr(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+export function monthRangeLocal(year: number, month: number): { start: string; end: string } {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  return { start: `${year}-${pad(month + 1)}-01`, end: `${year}-${pad(month + 1)}-${pad(lastDay)}` };
+}
+
 export function formatDate(date: string | null): string {
   if (!date) return '—';
   return new Date(date).toLocaleDateString('en-GB', {

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { Hospital, MonthlyEntry, Attendance, Patient, ClassEntry, Payment, Surgery } from '@/lib/types';
-import { formatDate, uploadImage, ensurePresentAttendance } from '@/lib/helpers';
+import { formatDate, uploadImage, ensurePresentAttendance, todayLocalDateStr, monthRangeLocal } from '@/lib/helpers';
 import { getColSummary } from '@/lib/col';
 import { buildHospitalSummaries, LEAVE_BREAKDOWN_KEYS } from '@/lib/hospitalSummary';
 import { AttendanceChoiceState, defaultAttendanceChoiceState, validateAttendanceChoice, buildAttendanceFields } from '@/lib/attendance';
@@ -15,6 +15,7 @@ import PatientRegistrationWizard from './PatientRegistrationWizard';
 import HospitalDailyTable from './HospitalDailyTable';
 import EditDayModal from './EditDayModal';
 import AttendanceStatusPicker from './AttendanceStatusPicker';
+import PresentDutyPrompt from './PresentDutyPrompt';
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -40,6 +41,7 @@ export default function Hospitals() {
   const [level, setLevel] = useState<'cards' | 'detail'>('cards');
   const [selectedHospitalId, setSelectedHospitalId] = useState<string | null>(null);
   const [editDayModal, setEditDayModal] = useState<{ hospitalId: string; hospitalName: string; date: string } | null>(null);
+  const [newAttendance, setNewAttendance] = useState<{ id: string; hospitalId: string } | null>(null);
   const now = new Date();
   const [selectedYear, setSelectedYear] = useState(now.getFullYear());
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth());
@@ -157,7 +159,10 @@ export default function Hospitals() {
       });
       if (error) { setError(error.message); return; }
     }
-    if (user) await ensurePresentAttendance(user.id, eHospital, eDate);
+    if (user) {
+      const { created, id } = await ensurePresentAttendance(user.id, eHospital, eDate);
+      if (created && id) setNewAttendance({ id, hospitalId: eHospital });
+    }
     setShowEntry(false);
     resetEntryForm();
     load();
@@ -289,9 +294,8 @@ export default function Hospitals() {
     load();
   };
 
-  const monthStart = new Date(selectedYear, selectedMonth, 1).toISOString().substring(0, 10);
-  const monthEnd = new Date(selectedYear, selectedMonth + 1, 0).toISOString().substring(0, 10);
-  const todayStr = now.toISOString().substring(0, 10);
+  const { start: monthStart, end: monthEnd } = monthRangeLocal(selectedYear, selectedMonth);
+  const todayStr = todayLocalDateStr(now);
 
   const hospitalSummary = buildHospitalSummaries({
     hospitals, patients, payments, surgeries, monthlyEntries: entries, attendance,
@@ -644,6 +648,15 @@ export default function Hospitals() {
             onDeleteDate={(date) => handleDeleteDay(selectedHospitalSummary.hospital.id, date)}
           />
         </div>
+      )}
+
+      {newAttendance && (
+        <PresentDutyPrompt
+          attendanceId={newAttendance.id}
+          hospitalId={newAttendance.hospitalId}
+          hospitalName={hospitals.find((h) => h.id === newAttendance.hospitalId)?.name}
+          onClose={() => { setNewAttendance(null); load(); }}
+        />
       )}
 
       {editDayModal && (

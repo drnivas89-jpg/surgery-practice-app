@@ -135,7 +135,7 @@ export default function AttendanceStatusPicker({ value, onChange, colAvailableDa
                 <p className="text-xs text-slate-400 mt-1">Only showing COL credits earned at this hospital — COL can only be redeemed at the same hospital it was earned.</p>
               </div>
             ) : (
-              <p className="text-xs text-amber-600 bg-amber-50 p-2.5 rounded-lg">No COL credits available at this hospital yet.</p>
+              <p className="text-xs text-amber-600 bg-amber-50 p-2.5 rounded-lg">No available COL credits at this hospital — none earned yet, or all are used or expired (credits only carry within their earning year).</p>
             )
           )}
         </div>

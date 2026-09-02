@@ -191,7 +191,7 @@ export default function ColMonthCalendar({ hospitalId, hospitalName, attendance,
                   </button>
                 </div>
               ) : (
-                <p className="text-xs text-amber-600 bg-amber-50 p-2.5 rounded-lg">No COL credits available at this hospital yet.</p>
+                <p className="text-xs text-amber-600 bg-amber-50 p-2.5 rounded-lg">No available COL credits at this hospital — none earned yet, or all are used or expired.</p>
               )
             )}
 

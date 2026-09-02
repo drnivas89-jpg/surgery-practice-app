@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { Hospital } from '@/lib/types';
-import { generateUniquePatientId, upsertDailyEntryCount, uploadImage, ensurePresentAttendance } from '@/lib/helpers';
+import { generateUniquePatientId, upsertDailyEntryCount, uploadImage, ensurePresentAttendance, todayLocalDateStr } from '@/lib/helpers';
 import PrescriptionTable, { DEFAULT_PRESCRIPTION } from './PrescriptionTable';
 import PresentDutyPrompt from './PresentDutyPrompt';
 import {
@@ -156,7 +156,7 @@ export default function PatientRegistrationWizard({ hospitals, defaultHospitalId
 
     try {
       const uniqueId = await generateUniquePatientId(user.id, hospitalId);
-      const today = new Date().toISOString().split('T')[0];
+      const today = todayLocalDateStr();
 
       // Upload discharge summary + treatment photos first (if any)
       let dischargeSummaryPath: string | null = null;

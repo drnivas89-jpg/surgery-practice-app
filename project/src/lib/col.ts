@@ -20,8 +20,10 @@ export interface ColSummary {
   accrued: number;
   redeemed: number;
   available: number;
+  expired: number;
   creditDates: ColCreditDate[];
   availableDates: ColCreditDate[];
+  expiredDates: ColCreditDate[];
   usage: ColUsageEntry[];
 }
 
@@ -44,7 +46,14 @@ export interface ColSummary {
 // Pass `hospitalId` to get the summary for just one hospital (e.g. to
 // populate a "compensates COL credit" picker that must not leak other
 // hospitals' credits).
-export function getColSummary(attendance: Attendance[], hospitalId?: string): ColSummary {
+//
+// Expiry: a COL credit is only usable within the calendar year it was
+// earned in. Once the calendar has moved past that year, an unused credit
+// is 'expired' rather than 'available' — it drops out of availableDates
+// (so it can no longer be redeemed) and shows up in expiredDates instead.
+// `currentYear` defaults to the real current year; pass it explicitly for
+// deterministic tests.
+export function getColSummary(attendance: Attendance[], hospitalId?: string, currentYear: number = new Date().getFullYear()): ColSummary {
   const scoped = hospitalId ? attendance.filter((a) => a.hospital_id === hospitalId) : attendance;
 
   const colEntries = scoped
@@ -110,23 +119,31 @@ export function getColSummary(attendance: Attendance[], hospitalId?: string): Co
     hospitalName: c.hospital?.name || '—',
     attendanceId: c.id,
   }));
-  const availableDates = creditDates.filter((c) => !claimed.has(claimKey(c.hospitalId, c.date)));
+  const unclaimed = creditDates.filter((c) => !claimed.has(claimKey(c.hospitalId, c.date)));
+  const isExpired = (date: string) => Number(date.substring(0, 4)) < currentYear;
+  const availableDates = unclaimed.filter((c) => !isExpired(c.date));
+  const expiredDates = unclaimed.filter((c) => isExpired(c.date));
 
   return {
     accrued: colEntries.length,
     redeemed: claimed.size,
     available: availableDates.length,
+    expired: expiredDates.length,
     creditDates,
     availableDates,
+    expiredDates,
     usage: usage.sort((a, b) => a.leaveDate.localeCompare(b.leaveDate)),
   };
 }
+
+export type ColCreditStatus = 'available' | 'used' | 'expired';
 
 export interface ColYearBucket {
   year: number;
   creditedCount: number;
   usedCount: number;
-  creditDates: (ColCreditDate & { used: boolean })[];
+  expiredCount: number;
+  creditDates: (ColCreditDate & { status: ColCreditStatus })[];
 }
 
 // Pure reshaping of an already-computed ColSummary into year-grouped
@@ -135,11 +152,12 @@ export interface ColYearBucket {
 // never disagree with getColSummary's own accrued/redeemed/available.
 export function groupColByYear(summary: ColSummary): ColYearBucket[] {
   const availableIds = new Set(summary.availableDates.map((d) => d.attendanceId));
+  const expiredIds = new Set(summary.expiredDates.map((d) => d.attendanceId));
   const byYear = new Map<number, ColYearBucket>();
   const ensure = (year: number) => {
     let bucket = byYear.get(year);
     if (!bucket) {
-      bucket = { year, creditedCount: 0, usedCount: 0, creditDates: [] };
+      bucket = { year, creditedCount: 0, usedCount: 0, expiredCount: 0, creditDates: [] };
       byYear.set(year, bucket);
     }
     return bucket;
@@ -149,7 +167,13 @@ export function groupColByYear(summary: ColSummary): ColYearBucket[] {
     const year = Number(c.date.substring(0, 4));
     const bucket = ensure(year);
     bucket.creditedCount++;
-    bucket.creditDates.push({ ...c, used: !availableIds.has(c.attendanceId) });
+    const status: ColCreditStatus = availableIds.has(c.attendanceId)
+      ? 'available'
+      : expiredIds.has(c.attendanceId)
+      ? 'expired'
+      : 'used';
+    if (status === 'expired') bucket.expiredCount++;
+    bucket.creditDates.push({ ...c, status });
   });
   summary.usage.forEach((u) => {
     ensure(Number(u.leaveDate.substring(0, 4))).usedCount++;
