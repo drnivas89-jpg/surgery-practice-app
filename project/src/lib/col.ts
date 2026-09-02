@@ -89,10 +89,15 @@ export function getColSummary(attendance: Attendance[], hospitalId?: string, cur
     });
   }
 
-  // Pass 2: legacy fallback for leave rows with no explicit link yet —
-  // only matches COL credits earned at the SAME hospital as the leave.
+  // Pass 2: legacy fallback, ONLY for leave rows that are actually typed
+  // as COL but predate the compensated_working_date column (so they have
+  // no explicit link to fall back on). Must not match Casual/Medical/Week
+  // Off/PDO/etc. leaves — those aren't COL redemptions at all, and
+  // matching them here was silently "using up" the next available credit
+  // against completely unrelated leave. Still hospital-scoped.
   for (const leave of leaveEntries) {
     if (leave.compensated_working_date) continue;
+    if ((leave.leave_type || '').toLowerCase() !== 'col') continue;
     const colBefore = colEntries.filter(
       (c) => c.hospital_id === leave.hospital_id && c.attendance_date <= leave.attendance_date
     );
