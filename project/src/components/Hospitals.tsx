@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import { Hospital, MonthlyEntry, Attendance, Patient, ClassEntry, Payment, Surgery } from '@/lib/types';
-import { formatDate, uploadImage, ensurePresentAttendance, todayLocalDateStr, monthRangeLocal } from '@/lib/helpers';
+import { Hospital, MonthlyEntry, Attendance, Patient, ClassEntry, Payment, RevenueTransaction, Surgery } from '@/lib/types';
+import { formatDate, uploadImage, getImageUrl, ensurePresentAttendance, todayLocalDateStr, monthRangeLocal } from '@/lib/helpers';
 import { getColSummary } from '@/lib/col';
 import { buildHospitalSummaries, LEAVE_BREAKDOWN_KEYS } from '@/lib/hospitalSummary';
 import { AttendanceChoiceState, defaultAttendanceChoiceState, validateAttendanceChoice, buildAttendanceFields } from '@/lib/attendance';
 import {
   Building2, Plus, Trash2, X, Calendar, Pencil, Clock, Search,
-  UserRound, Stethoscope, ArrowRight, GraduationCap, Upload, ArrowLeft, ChevronLeft, ChevronRight, Award,
+  UserRound, Stethoscope, ArrowRight, GraduationCap, Upload, Download, ArrowLeft, ChevronLeft, ChevronRight, Award,
 } from 'lucide-react';
 import PatientForm from './PatientForm';
 import PatientRegistrationWizard from './PatientRegistrationWizard';
@@ -29,6 +29,7 @@ export default function Hospitals() {
   const [attendance, setAttendance] = useState<Attendance[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
+  const [revenueTransactions, setRevenueTransactions] = useState<RevenueTransaction[]>([]);
   const [surgeries, setSurgeries] = useState<Surgery[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
@@ -53,17 +54,24 @@ export default function Hospitals() {
   const [entryHospitalId, setEntryHospitalId] = useState('');
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
 
-  // Classes / Teaching
+  // Classes / Teaching — academic scheduler + presentation repository
   const [classes, setClasses] = useState<ClassEntry[]>([]);
+  const [classSearch, setClassSearch] = useState('');
+  const [classPptUrls, setClassPptUrls] = useState<Record<string, string>>({});
   const [showClassForm, setShowClassForm] = useState(false);
   const [editingClassId, setEditingClassId] = useState<string | null>(null);
   const [cHospital, setCHospital] = useState('');
   const [cDate, setCDate] = useState(new Date().toISOString().split('T')[0]);
+  const [cTime, setCTime] = useState('');
   const [cType, setCType] = useState('');
   const [cAudience, setCAudience] = useState('');
   const [cTopic, setCTopic] = useState('');
+  const [cLocation, setCLocation] = useState('');
+  const [cPresenter, setCPresenter] = useState('');
+  const [cCategory, setCCategory] = useState('');
   const [cNotes, setCNotes] = useState('');
-  const [cPptFile, setCPptFile] = useState<File | null>(null);
+  const [cPptFiles, setCPptFiles] = useState<File[]>([]);
+  const [cExistingPptPaths, setCExistingPptPaths] = useState<string[]>([]);
   const [cSaving, setCSaving] = useState(false);
   const [cError, setCError] = useState<string | null>(null);
 
@@ -90,7 +98,7 @@ export default function Hospitals() {
   const [eNotes, setENotes] = useState('');
 
   const load = async () => {
-    const [{ data: h }, { data: me }, { data: att }, { data: pts }, { data: cls }, { data: pay }, { data: sur }] = await Promise.all([
+    const [{ data: h }, { data: me }, { data: att }, { data: pts }, { data: cls }, { data: pay }, { data: sur }, { data: rt }] = await Promise.all([
       supabase.from('hospitals').select('*').order('name'),
       supabase.from('monthly_entries').select('*, hospital:hospitals(*)').order('entry_date', { ascending: false }),
       supabase.from('attendance').select('*, hospital:hospitals(*)').order('attendance_date', { ascending: false }),
@@ -98,6 +106,7 @@ export default function Hospitals() {
       supabase.from('classes').select('*, hospital:hospitals(*)').order('class_date', { ascending: false }),
       supabase.from('payments').select('*, patient:patients(*)'),
       supabase.from('surgeries').select('*'),
+      supabase.from('revenue_transactions').select('*, hospital:hospitals(*)'),
     ]);
     setHospitals(h || []);
     setEntries(me || []);
@@ -106,7 +115,20 @@ export default function Hospitals() {
     setClasses(cls || []);
     setPayments(pay || []);
     setSurgeries(sur || []);
+    setRevenueTransactions(rt || []);
     setLoading(false);
+
+    const pptPaths = new Set<string>();
+    (cls || []).forEach((c) => {
+      (c.ppt_paths || []).forEach((p: string) => pptPaths.add(p));
+      if (c.ppt_path) pptPaths.add(c.ppt_path);
+    });
+    const urlMap: Record<string, string> = {};
+    for (const path of pptPaths) {
+      const url = await getImageUrl(path);
+      if (url) urlMap[path] = url;
+    }
+    setClassPptUrls(urlMap);
   };
 
   useEffect(() => { load(); }, []);
@@ -236,20 +258,25 @@ export default function Hospitals() {
 
   const resetClassForm = () => {
     setEditingClassId(null);
-    setCHospital(''); setCDate(new Date().toISOString().split('T')[0]);
-    setCType(''); setCAudience(''); setCTopic(''); setCNotes('');
-    setCPptFile(null); setCError(null);
+    setCHospital(''); setCDate(new Date().toISOString().split('T')[0]); setCTime('');
+    setCType(''); setCAudience(''); setCTopic(''); setCLocation(''); setCPresenter(''); setCCategory(''); setCNotes('');
+    setCPptFiles([]); setCExistingPptPaths([]); setCError(null);
   };
 
   const openEditClass = (c: ClassEntry) => {
     setEditingClassId(c.id);
     setCHospital(c.hospital_id || '');
     setCDate(c.class_date ? c.class_date.substring(0, 10) : new Date().toISOString().split('T')[0]);
+    setCTime(c.class_time || '');
     setCType(c.class_type || '');
     setCAudience(c.audience || '');
     setCTopic(c.topic || '');
+    setCLocation(c.location || '');
+    setCPresenter(c.presenter || '');
+    setCCategory(c.category || '');
     setCNotes(c.notes || '');
-    setCPptFile(null);
+    setCPptFiles([]);
+    setCExistingPptPaths(c.ppt_paths && c.ppt_paths.length > 0 ? c.ppt_paths : (c.ppt_path ? [c.ppt_path] : []));
     setCError(null);
     setShowClassForm(true);
   };
@@ -260,20 +287,26 @@ export default function Hospitals() {
     setCSaving(true);
     setCError(null);
 
+    const pptPaths = [...cExistingPptPaths];
+    for (const file of cPptFiles) {
+      const path = await uploadImage(file, user.id, 'class-ppt');
+      if (path) pptPaths.push(path);
+    }
+
     const payload: Record<string, unknown> = {
       hospital_id: cHospital || null,
       class_date: cDate || null,
+      class_time: cTime,
       class_type: cType,
       audience: cAudience,
       topic: cTopic,
+      location: cLocation,
+      presenter: cPresenter,
+      category: cCategory,
       notes: cNotes,
+      ppt_paths: pptPaths,
+      ppt_path: pptPaths[0] || null,
     };
-
-    if (cPptFile) {
-      payload.ppt_path = await uploadImage(cPptFile, user.id, 'class-ppt');
-    } else if (!editingClassId) {
-      payload.ppt_path = null;
-    }
 
     if (editingClassId) {
       const { error } = await supabase.from('classes').update(payload).eq('id', editingClassId);
@@ -298,7 +331,7 @@ export default function Hospitals() {
   const todayStr = todayLocalDateStr(now);
 
   const hospitalSummary = buildHospitalSummaries({
-    hospitals, patients, payments, surgeries, monthlyEntries: entries, attendance,
+    hospitals, patients, payments, surgeries, monthlyEntries: entries, revenueTransactions, attendance,
     rangeStart: monthStart, rangeEnd: monthEnd, todayStr,
   });
   const selectedHospitalSummary = hospitalSummary.find((hs) => hs.hospital.id === selectedHospitalId) || null;
@@ -313,6 +346,20 @@ export default function Hospitals() {
         );
       }).slice(0, 8)
     : [];
+
+  const filteredClasses = classSearch.trim().length === 0
+    ? classes
+    : classes.filter((c) => {
+        const q = classSearch.toLowerCase();
+        return (
+          (c.topic || '').toLowerCase().includes(q) ||
+          (c.class_type || '').toLowerCase().includes(q) ||
+          (c.category || '').toLowerCase().includes(q) ||
+          (c.presenter || '').toLowerCase().includes(q) ||
+          (c.audience || '').toLowerCase().includes(q) ||
+          (c.hospital?.name || '').toLowerCase().includes(q)
+        );
+      });
 
   const openNewEntry = (type: 'op' | 'ip') => {
     setEntryPatientType(type);
@@ -478,9 +525,9 @@ export default function Hospitals() {
         )}
       </div>
 
-      {/* Classes / Teaching */}
+      {/* Classes / Teaching — academic scheduler + presentation repository */}
       <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
           <div className="flex items-center gap-2">
             <GraduationCap className="w-4 h-4 text-violet-500" />
             <h2 className="font-semibold text-slate-700">Classes / Teaching</h2>
@@ -492,8 +539,18 @@ export default function Hospitals() {
             <Plus className="w-3.5 h-3.5" /> Add Class
           </button>
         </div>
-        {classes.length === 0 ? (
-          <p className="text-sm text-slate-400 py-4 text-center">No classes logged yet.</p>
+        <div className="relative mb-4">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+          <input
+            type="text"
+            value={classSearch}
+            onChange={(e) => setClassSearch(e.target.value)}
+            placeholder="Search by topic, type, category, presenter, audience..."
+            className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+          />
+        </div>
+        {filteredClasses.length === 0 ? (
+          <p className="text-sm text-slate-400 py-4 text-center">{classes.length === 0 ? 'No classes logged yet.' : 'No classes match your search.'}</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -502,33 +559,50 @@ export default function Hospitals() {
                   <th className="px-3 py-2 font-medium">Date</th>
                   <th className="px-3 py-2 font-medium">Hospital</th>
                   <th className="px-3 py-2 font-medium">Type</th>
-                  <th className="px-3 py-2 font-medium">Audience</th>
                   <th className="px-3 py-2 font-medium">Topic</th>
-                  <th className="px-3 py-2 font-medium">PPT</th>
+                  <th className="px-3 py-2 font-medium">Presenter</th>
+                  <th className="px-3 py-2 font-medium">Location</th>
+                  <th className="px-3 py-2 font-medium">Files</th>
                   <th className="px-3 py-2 font-medium"></th>
                 </tr>
               </thead>
               <tbody>
-                {classes.map((c) => (
-                  <tr key={c.id} className="border-b border-slate-50 hover:bg-slate-50 transition group">
-                    <td className="px-3 py-2.5 text-slate-600">{formatDate(c.class_date)}</td>
-                    <td className="px-3 py-2.5 text-slate-600">{c.hospital?.name || '—'}</td>
-                    <td className="px-3 py-2.5 text-slate-600">{c.class_type || '—'}</td>
-                    <td className="px-3 py-2.5 text-slate-600">{c.audience || '—'}</td>
-                    <td className="px-3 py-2.5 text-slate-700 font-medium">{c.topic || '—'}</td>
-                    <td className="px-3 py-2.5 text-slate-400">{c.ppt_path ? 'Uploaded' : '—'}</td>
-                    <td className="px-3 py-2.5">
-                      <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition">
-                        <button onClick={() => openEditClass(c)} className="text-slate-300 hover:text-sky-500 transition p-1">
-                          <Pencil className="w-3.5 h-3.5" />
-                        </button>
-                        <button onClick={() => handleDeleteClass(c.id)} className="text-slate-300 hover:text-red-500 transition p-1">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {filteredClasses.map((c) => {
+                  const files = c.ppt_paths && c.ppt_paths.length > 0 ? c.ppt_paths : (c.ppt_path ? [c.ppt_path] : []);
+                  return (
+                    <tr key={c.id} className="border-b border-slate-50 hover:bg-slate-50 transition group">
+                      <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{formatDate(c.class_date)}{c.class_time ? ` · ${c.class_time}` : ''}</td>
+                      <td className="px-3 py-2.5 text-slate-600">{c.hospital?.name || '—'}</td>
+                      <td className="px-3 py-2.5 text-slate-600">{c.class_type || '—'}</td>
+                      <td className="px-3 py-2.5 text-slate-700 font-medium">{c.topic || '—'}</td>
+                      <td className="px-3 py-2.5 text-slate-600">{c.presenter || '—'}</td>
+                      <td className="px-3 py-2.5 text-slate-600">{c.location || '—'}</td>
+                      <td className="px-3 py-2.5">
+                        {files.length === 0 ? (
+                          <span className="text-slate-400">—</span>
+                        ) : (
+                          <div className="flex flex-col gap-1">
+                            {files.map((path, i) => classPptUrls[path] ? (
+                              <a key={path} href={classPptUrls[path]} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-violet-600 hover:text-violet-700 transition text-xs">
+                                <Download className="w-3 h-3" /> File {i + 1}
+                              </a>
+                            ) : null)}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition">
+                          <button onClick={() => openEditClass(c)} className="text-slate-300 hover:text-sky-500 transition p-1">
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button onClick={() => handleDeleteClass(c.id)} className="text-slate-300 hover:text-red-500 transition p-1">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -802,17 +876,23 @@ export default function Hospitals() {
                 {hospitals.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
               </select>
             </div>
-            <div>
-              <label htmlFor="c-date" className="block text-sm font-medium text-slate-600 mb-1.5">Date</label>
-              <input id="c-date" name="classDate" type="date" value={cDate} onChange={(e) => setCDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" />
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="c-date" className="block text-sm font-medium text-slate-600 mb-1.5">Date</label>
+                <input id="c-date" name="classDate" type="date" value={cDate} onChange={(e) => setCDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" />
+              </div>
+              <div>
+                <label htmlFor="c-time" className="block text-sm font-medium text-slate-600 mb-1.5">Time</label>
+                <input id="c-time" name="classTime" type="text" value={cTime} onChange={(e) => setCTime(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="e.g. 5:00 PM" />
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label htmlFor="c-type" className="block text-sm font-medium text-slate-600 mb-1.5">Type of Class</label>
-                <input id="c-type" name="classType" type="text" value={cType} onChange={(e) => setCType(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="e.g. CME, Lecture, Workshop" />
+                <input id="c-type" name="classType" type="text" value={cType} onChange={(e) => setCType(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="e.g. CME, Lecture, Workshop, Journal Club" />
               </div>
               <div>
-                <label htmlFor="c-audience" className="block text-sm font-medium text-slate-600 mb-1.5">Class To Whom</label>
+                <label htmlFor="c-audience" className="block text-sm font-medium text-slate-600 mb-1.5">Target Batch / Audience</label>
                 <input id="c-audience" name="audience" type="text" value={cAudience} onChange={(e) => setCAudience(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="e.g. MBBS students" />
               </div>
             </div>
@@ -820,13 +900,42 @@ export default function Hospitals() {
               <label htmlFor="c-topic" className="block text-sm font-medium text-slate-600 mb-1.5">Topic</label>
               <input id="c-topic" name="topic" type="text" value={cTopic} onChange={(e) => setCTopic(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" />
             </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="c-location" className="block text-sm font-medium text-slate-600 mb-1.5">Location / Platform</label>
+                <input id="c-location" name="location" type="text" value={cLocation} onChange={(e) => setCLocation(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="e.g. Seminar Hall 2, Zoom" />
+              </div>
+              <div>
+                <label htmlFor="c-presenter" className="block text-sm font-medium text-slate-600 mb-1.5">Presenter</label>
+                <input id="c-presenter" name="presenter" type="text" value={cPresenter} onChange={(e) => setCPresenter(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" />
+              </div>
+            </div>
             <div>
-              <label htmlFor="c-ppt" className="block text-sm font-medium text-slate-600 mb-1.5">Class PPT (optional)</label>
+              <label htmlFor="c-category" className="block text-sm font-medium text-slate-600 mb-1.5">Subspecialty / Category</label>
+              <input id="c-category" name="category" type="text" value={cCategory} onChange={(e) => setCCategory(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="e.g. General Surgery" />
+            </div>
+            {cExistingPptPaths.length > 0 && (
+              <div>
+                <label className="block text-sm font-medium text-slate-600 mb-1.5">Attached Files</label>
+                <div className="space-y-1.5">
+                  {cExistingPptPaths.map((path, i) => (
+                    <div key={path} className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 text-sm">
+                      <span className="text-slate-600 truncate">{path.split('/').pop()}</span>
+                      <button type="button" onClick={() => setCExistingPptPaths(cExistingPptPaths.filter((_, idx) => idx !== i))} className="text-slate-400 hover:text-red-500 transition flex-shrink-0 ml-2">
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div>
+              <label htmlFor="c-ppt" className="block text-sm font-medium text-slate-600 mb-1.5">Add Files (PPT / PDF, optional)</label>
               <label htmlFor="c-ppt" className="flex items-center gap-2 px-3 py-2.5 rounded-lg border border-dashed border-slate-300 text-sm text-slate-500 cursor-pointer hover:border-sky-400 hover:text-sky-600 transition">
                 <Upload className="w-4 h-4" />
-                {cPptFile ? cPptFile.name : editingClassId ? 'Replace uploaded file' : 'Upload PPT / PDF'}
+                {cPptFiles.length > 0 ? `${cPptFiles.length} file(s) selected` : 'Upload slides and/or a lecture PDF'}
               </label>
-              <input id="c-ppt" name="ppt" type="file" accept=".ppt,.pptx,.pdf" className="hidden" onChange={(e) => setCPptFile(e.target.files?.[0] || null)} />
+              <input id="c-ppt" name="ppt" type="file" accept=".ppt,.pptx,.pdf" multiple className="hidden" onChange={(e) => setCPptFiles(Array.from(e.target.files || []))} />
             </div>
             <div>
               <label htmlFor="c-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>

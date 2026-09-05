@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Patient, Hospital } from '@/lib/types';
 import { formatDate, formatCurrency, daysUntil } from '@/lib/helpers';
-import { Users, Plus, Search, Activity, Calendar, ArrowLeft, Trash2, Pencil, Download } from 'lucide-react';
+import { Users, Plus, Search, Activity, Calendar, Trash2, Pencil, Download } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import PatientForm from './PatientForm';
 import PatientRegistrationWizard from './PatientRegistrationWizard';

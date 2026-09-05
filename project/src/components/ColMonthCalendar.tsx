@@ -33,6 +33,8 @@ export default function ColMonthCalendar({ hospitalId, hospitalName, attendance,
   const [month, setMonth] = useState(initialMonth ?? now.getMonth());
   const [year, setYear] = useState(initialYear ?? now.getFullYear());
   const [pickedDate, setPickedDate] = useState<string | null>(null);
+  const [mode, setMode] = useState<'credit' | 'utilised' | null>(null);
+  const [creditReason, setCreditReason] = useState('');
   const [redeemChoice, setRedeemChoice] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -62,7 +64,7 @@ export default function ColMonthCalendar({ hospitalId, hospitalName, attendance,
     return 'bg-slate-300';
   };
 
-  const openPicker = (date: string) => { setPickedDate(date); setRedeemChoice(''); setError(null); };
+  const openPicker = (date: string) => { setPickedDate(date); setMode(null); setCreditReason(''); setRedeemChoice(''); setError(null); };
 
   const saveEntry = async (kind: 'credit' | 'utilised') => {
     if (!pickedDate) return;
@@ -84,8 +86,8 @@ export default function ColMonthCalendar({ hospitalId, hospitalName, attendance,
     }
 
     const fields = kind === 'credit'
-      ? buildAttendanceFields({ choice: 'extra_duty', extraDutyKind: 'col', extraDutyOthersText: '', dutySubtype: '', leaveType: '', compensatedWorkingDate: '' })
-      : buildAttendanceFields({ choice: 'leave', leaveType: 'col', compensatedWorkingDate: redeemChoice, extraDutyKind: 'col', extraDutyOthersText: '', dutySubtype: '' });
+      ? buildAttendanceFields({ choice: 'extra_duty', extraDutyKind: 'col', extraDutyOthersText: '', dutySubtype: '', colReason: creditReason, leaveType: '', compensatedWorkingDate: '' })
+      : buildAttendanceFields({ choice: 'leave', leaveType: 'col', compensatedWorkingDate: redeemChoice, extraDutyKind: 'col', extraDutyOthersText: '', dutySubtype: '', colReason: '' });
 
     const payload = { user_id: userId, hospital_id: hospitalId, attendance_date: pickedDate, ...fields, notes: '' };
     const { error: saveError } = await supabase.from('attendance').upsert(payload, { onConflict: 'user_id,hospital_id,attendance_date' });
@@ -149,7 +151,7 @@ export default function ColMonthCalendar({ hospitalId, hospitalName, attendance,
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
-                onClick={() => saveEntry('credit')}
+                onClick={() => setMode('credit')}
                 disabled={saving}
                 className="flex flex-col items-center gap-1.5 p-3 rounded-lg border-2 border-amber-200 hover:border-amber-400 hover:bg-amber-50 transition disabled:opacity-50"
               >
@@ -158,7 +160,7 @@ export default function ColMonthCalendar({ hospitalId, hospitalName, attendance,
               </button>
               <button
                 type="button"
-                onClick={() => setRedeemChoice(redeemChoice || 'pending')}
+                onClick={() => { setMode('utilised'); setRedeemChoice(redeemChoice || 'pending'); }}
                 disabled={saving}
                 className="flex flex-col items-center gap-1.5 p-3 rounded-lg border-2 border-red-200 hover:border-red-400 hover:bg-red-50 transition disabled:opacity-50"
               >
@@ -167,7 +169,28 @@ export default function ColMonthCalendar({ hospitalId, hospitalName, attendance,
               </button>
             </div>
 
-            {redeemChoice !== '' && (
+            {mode === 'credit' && (
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1.5">Reason / Occasion (optional)</label>
+                <input
+                  type="text"
+                  value={creditReason}
+                  onChange={(e) => setCreditReason(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none"
+                  placeholder="e.g. Republic Day Duty Compensation..."
+                />
+                <button
+                  type="button"
+                  onClick={() => saveEntry('credit')}
+                  disabled={saving}
+                  className="w-full mt-2 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 transition disabled:opacity-50"
+                >
+                  {saving ? 'Saving...' : 'Save as Credit'}
+                </button>
+              </div>
+            )}
+
+            {mode === 'utilised' && (
               colSummary.availableDates.length > 0 ? (
                 <div>
                   <label className="block text-xs font-medium text-slate-600 mb-1.5">Redeems which COL credit? *</label>

@@ -208,6 +208,7 @@ export default function COLDashboard() {
                               {formatDate(c.date)}
                             </p>
                           )}
+                          {c.reason && <p className="text-xs text-slate-400 mt-0.5">{c.reason}</p>}
                         </div>
                         {isEditing ? (
                           <div className="flex items-center gap-1">

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Plus, Trash2, ArrowUp, ArrowDown, X } from 'lucide-react';
 import { PrescriptionTableData } from '@/lib/types';
 
+// eslint-disable-next-line react-refresh/only-export-components -- small shared constant, not worth a separate file
 export const DEFAULT_PRESCRIPTION: PrescriptionTableData = {
   columns: [
     { key: 'drug_name', label: 'Drug Name' },

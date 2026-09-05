@@ -61,6 +61,9 @@ export interface Attendance {
   compensated_working_date: string | null;
   leave_type: string | null;
   extra_duty_type: string | null;
+  // Free-text occasion/reason for a COL credit (e.g. "Republic Day Duty
+  // Compensation") — optional, captured when Extra Duty -> COL is chosen.
+  col_reason: string | null;
   notes: string;
   created_at: string;
   hospital?: Hospital;
@@ -82,6 +85,7 @@ export interface Surgery {
   image_paths: string[];
   consent_image_paths: string[];
   role: 'done_by_me' | 'assisted_by_me' | null;
+  outcome: string | null;
   created_at: string;
 }
 
@@ -203,11 +207,31 @@ export interface ClassEntry {
   user_id: string;
   hospital_id: string | null;
   class_date: string | null;
+  class_time: string;
   class_type: string;
   audience: string;
   topic: string;
+  location: string;
+  presenter: string;
+  category: string;
   ppt_path: string | null;
+  ppt_paths: string[];
   notes: string;
+  created_at: string;
+  hospital?: Hospital;
+}
+
+export interface RevenueTransaction {
+  id: string;
+  user_id: string;
+  hospital_id: string;
+  entry_date: string;
+  description: string;
+  amount_generated: number;
+  amount_received: number;
+  op_count: number;
+  ip_count: number;
+  opinion_count: number;
   created_at: string;
   hospital?: Hospital;
 }

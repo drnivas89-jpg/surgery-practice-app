@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { Collaborator, Hospital, Patient, Surgery, MonthlyEntry, Attendance } from '@/lib/types';
-import { formatCurrency, formatDate } from '@/lib/helpers';
+import { formatDate } from '@/lib/helpers';
 import {
   Share2, UserPlus, Mail, Check, X, Trash2, Eye, ArrowLeft,
-  Clock, ShieldCheck, Users, Building2, Activity,
+  Clock, ShieldCheck, Users, Building2,
 } from 'lucide-react';
 
 export default function Sharing() {
@@ -29,7 +29,7 @@ export default function Sharing() {
   const [sharedEntries, setSharedEntries] = useState<MonthlyEntry[]>([]);
   const [sharedAttendance, setSharedAttendance] = useState<Attendance[]>([]);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!user) return;
     const incomingFilter = user.email
       ? `invited_user_id.eq.${user.id},invited_email.eq.${user.email}`
@@ -51,9 +51,9 @@ export default function Sharing() {
       })
     );
     setOwnerEmails(Object.fromEntries(emailPairs));
-  };
+  }, [user]);
 
-  useEffect(() => { load(); }, [user]);
+  useEffect(() => { load(); }, [load]);
 
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();

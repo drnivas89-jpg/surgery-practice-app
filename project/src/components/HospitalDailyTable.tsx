@@ -107,12 +107,16 @@ export default function HospitalDailyTable({ rows, onEditDate, onDeleteDate }: P
                     <td className="px-3 py-2.5 text-slate-500">{r.hospitalName}</td>
                     <td className="px-3 py-2.5">
                       {r.attendanceStatusLabel ? (
-                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${statusBadgeClass(r.attendanceStatusLabel)}`}>
+                        <span
+                          className={`text-xs font-medium px-2 py-0.5 rounded-full ${statusBadgeClass(r.attendanceStatusLabel)}`}
+                          title={r.colReason || undefined}
+                        >
                           {r.attendanceStatusLabel}
                         </span>
                       ) : (
                         <span className="text-xs font-medium text-red-600">No Entry</span>
                       )}
+                      {r.colReason && <p className="text-[10px] text-slate-400 mt-0.5 truncate max-w-[160px]">{r.colReason}</p>}
                     </td>
                     <td className="px-3 py-2.5 text-right text-slate-600">{r.opCount}</td>
                     <td className="px-3 py-2.5 text-right text-slate-600">{r.ipCount}</td>

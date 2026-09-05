@@ -95,6 +95,18 @@ export default function AttendanceStatusPicker({ value, onChange, colAvailableDa
               placeholder="Describe the extra duty type..."
             />
           )}
+          {value.extraDutyKind === 'col' && (
+            <div className="mt-2">
+              <label className="block text-xs font-medium text-slate-500 mb-1">Reason / Occasion (optional)</label>
+              <input
+                type="text"
+                value={value.colReason}
+                onChange={(e) => set({ colReason: e.target.value })}
+                className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none"
+                placeholder="e.g. Republic Day Duty Compensation, Emergency On-Call..."
+              />
+            </div>
+          )}
         </div>
       )}
 

@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import { Patient, Hospital, Payment, Surgery, MonthlyEntry, Attendance } from '@/lib/types';
+import { Patient, Hospital, Payment, Surgery, MonthlyEntry, Attendance, RevenueTransaction, ClassEntry } from '@/lib/types';
 import { formatDate, formatCurrency, daysUntil, todayLocalDateStr, monthRangeLocal } from '@/lib/helpers';
 import { getColSummary } from '@/lib/col';
 import { buildHospitalSummaries, SURGERY_CATEGORIES, LEAVE_BREAKDOWN_KEYS, LeaveBreakdown } from '@/lib/hospitalSummary';
 import { View } from './Layout';
 import {
-  Calendar, AlertTriangle, Zap, IndianRupee, Users, Activity,
+  Calendar, AlertTriangle, Zap, IndianRupee, Users, Activity, GraduationCap,
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -25,19 +25,23 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const [payments, setPayments] = useState<Payment[]>([]);
   const [surgeries, setSurgeries] = useState<Surgery[]>([]);
   const [monthlyEntries, setMonthlyEntries] = useState<MonthlyEntry[]>([]);
+  const [revenueTransactions, setRevenueTransactions] = useState<RevenueTransaction[]>([]);
   const [attendance, setAttendance] = useState<Attendance[]>([]);
+  const [classes, setClasses] = useState<ClassEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!user) return;
     (async () => {
-      const [{ data: p }, { data: h }, { data: pay }, { data: sur }, { data: me }, { data: att }] = await Promise.all([
+      const [{ data: p }, { data: h }, { data: pay }, { data: sur }, { data: me }, { data: att }, { data: rt }, { data: cls }] = await Promise.all([
         supabase.from('patients').select('*, hospital:hospitals(*)').order('created_at', { ascending: false }),
         supabase.from('hospitals').select('*').order('name'),
         supabase.from('payments').select('*, patient:patients(*)'),
         supabase.from('surgeries').select('*').order('surgery_date', { ascending: false }),
         supabase.from('monthly_entries').select('*, hospital:hospitals(*)').order('month', { ascending: false }),
         supabase.from('attendance').select('*, hospital:hospitals(*)').order('attendance_date', { ascending: false }),
+        supabase.from('revenue_transactions').select('*, hospital:hospitals(*)'),
+        supabase.from('classes').select('*, hospital:hospitals(*)').order('class_date', { ascending: true }),
       ]);
       setPatients(p || []);
       setHospitals(h || []);
@@ -45,6 +49,8 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       setSurgeries(sur || []);
       setMonthlyEntries(me || []);
       setAttendance(att || []);
+      setRevenueTransactions(rt || []);
+      setClasses(cls || []);
       setLoading(false);
     })();
   }, [user]);
@@ -54,7 +60,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const { start: monthStart, end: monthEnd } = monthRangeLocal(now.getFullYear(), now.getMonth());
 
   const hospitalSummary = buildHospitalSummaries({
-    hospitals, patients, payments, surgeries, monthlyEntries, attendance,
+    hospitals, patients, payments, surgeries, monthlyEntries, revenueTransactions, attendance,
     rangeStart: monthStart, rangeEnd: monthEnd, todayStr,
   }).filter((hs) => hs.hasActivity);
 
@@ -85,6 +91,15 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       if (b.daysLeft === null) return -1;
       return a.daysLeft - b.daysLeft;
     });
+
+  // Upcoming Classes & Presentations — sessions due in the next 24-72
+  // hours (day-granularity: 1-3 days out, since class_date has no time
+  // component to combine with class_time's free text).
+  const upcomingClasses = classes
+    .filter((c) => !!c.class_date)
+    .map((c) => ({ cls: c, daysLeft: daysUntil(c.class_date) }))
+    .filter(({ daysLeft }) => daysLeft !== null && daysLeft >= 0 && daysLeft <= 3)
+    .sort((a, b) => (a.daysLeft ?? 0) - (b.daysLeft ?? 0));
 
   if (loading) {
     return (
@@ -208,6 +223,35 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+      </div>
+
+      {/* Upcoming Classes & Presentations widget */}
+      <div className="bg-white rounded-xl border border-slate-200 p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2"><GraduationCap className="w-4 h-4 text-violet-500" /><h2 className="font-semibold text-slate-700">Upcoming Classes &amp; Presentations</h2></div>
+          <button onClick={() => onNavigate('hospitals')} className="text-xs font-medium text-violet-600 hover:text-violet-700">View all →</button>
+        </div>
+        {upcomingClasses.length === 0 ? (
+          <p className="text-sm text-slate-400 py-4 text-center">Nothing scheduled in the next 3 days.</p>
+        ) : (
+          <div className="space-y-2">
+            {upcomingClasses.map(({ cls, daysLeft }) => (
+              <div key={cls.id} className="flex items-center justify-between gap-3 p-3 rounded-lg border border-slate-100 bg-slate-50">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-slate-700 truncate">{cls.topic || cls.class_type || 'Untitled session'}</p>
+                  <p className="text-xs text-slate-400 truncate">
+                    {formatDate(cls.class_date)}{cls.class_time ? ` · ${cls.class_time}` : ''}
+                    {cls.location ? ` · ${cls.location}` : ''}
+                    {cls.hospital?.name ? ` · ${cls.hospital.name}` : ''}
+                  </p>
+                </div>
+                <span className={`flex-shrink-0 text-xs font-medium px-2 py-1 rounded ${(daysLeft ?? 3) <= 1 ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                  {daysLeft === 0 ? 'Today' : daysLeft === 1 ? 'Tomorrow' : `in ${daysLeft}d`}
+                </span>
+              </div>
+            ))}
           </div>
         )}
       </div>

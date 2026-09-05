@@ -3,6 +3,7 @@ import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { Patient, Hospital, Surgery, ClassEntry, Publication, Investigation, ProcedureCategory } from '@/lib/types';
 import { formatDate, getImageUrl } from '@/lib/helpers';
+import { SURGERY_CATEGORIES, categorizeSurgery as categorize, SurgeryCategory } from '@/lib/hospitalSummary';
 import { Activity, Download, Filter, X, GraduationCap, BookOpen, Stethoscope, Pencil, RefreshCw } from 'lucide-react';
 import jsPDF from 'jspdf';
 
@@ -10,16 +11,6 @@ const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
-
-const SURGERY_CATEGORIES = ['Major', 'Minor', 'Bedside', 'Endoscopy', 'Others'] as const;
-function categorize(surgery: { procedure_category?: string | null; surgery_type: string | null | undefined }): typeof SURGERY_CATEGORIES[number] {
-  if (surgery.procedure_category && (SURGERY_CATEGORIES as readonly string[]).includes(surgery.procedure_category)) {
-    return surgery.procedure_category as typeof SURGERY_CATEGORIES[number];
-  }
-  const t = (surgery.surgery_type || '').trim().toLowerCase();
-  const match = SURGERY_CATEGORIES.find((c) => c.toLowerCase() === t);
-  return match || 'Others';
-}
 
 // Clinical palette used throughout the exported PDF.
 const NAVY: [number, number, number] = [30, 41, 59];      // #1E293B
@@ -272,35 +263,85 @@ export default function SurgicalLogbook() {
       page++;
       y = margin;
 
-      // ---- Table of Contents ----
+      // ---- Diagnosis-Based Summary ----
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(16);
       doc.setTextColor(...NAVY);
-      doc.text('Table of Contents', margin, y);
+      doc.text('Diagnosis Summary', margin, y);
       y += 10;
       doc.setDrawColor(...BORDER);
       doc.line(margin, y, pageWidth - margin, y);
       y += 22;
 
-      const byDate = new Map<string, LogbookRow[]>();
+      interface DiagnosisGroup {
+        diagnosis: string;
+        rows: LogbookRow[];
+        categoryCounts: Record<SurgeryCategory, number>;
+        outcomes: string[];
+      }
+      const byDiagnosis = new Map<string, DiagnosisGroup>();
       for (const r of filtered) {
-        const key = r.surgery.surgery_date ? r.surgery.surgery_date.substring(0, 10) : 'No Date';
-        if (!byDate.has(key)) byDate.set(key, []);
-        byDate.get(key)!.push(r);
+        const raw = (r.patient?.diagnosis || '').trim();
+        const key = raw || 'Undiagnosed';
+        let group = byDiagnosis.get(key);
+        if (!group) {
+          group = { diagnosis: key, rows: [], categoryCounts: { Major: 0, Minor: 0, Bedside: 0, Endoscopy: 0, Others: 0 }, outcomes: [] };
+          byDiagnosis.set(key, group);
+        }
+        group.rows.push(r);
+        group.categoryCounts[categorize(r.surgery)]++;
+        if (r.surgery.outcome?.trim()) group.outcomes.push(r.surgery.outcome.trim());
       }
-      const sortedDates = Array.from(byDate.keys()).sort((a, b) => a.localeCompare(b));
+      const diagnosisGroups = Array.from(byDiagnosis.values()).sort((a, b) => b.rows.length - a.rows.length);
 
+      // Column layout: Diagnosis | Cases | Mj | Mi | Bd | En | Ot | Outcomes
+      const cols = [
+        { label: 'Diagnosis', width: 130 },
+        { label: 'Cases', width: 35, align: 'right' as const },
+        { label: 'Mj', width: 26, align: 'right' as const },
+        { label: 'Mi', width: 26, align: 'right' as const },
+        { label: 'Bd', width: 26, align: 'right' as const },
+        { label: 'En', width: 26, align: 'right' as const },
+        { label: 'Ot', width: 26, align: 'right' as const },
+        { label: 'Outcomes', width: maxWidth - (130 + 35 + 26 * 5) },
+      ];
+      const drawSummaryHeader = () => {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(8.5);
+        doc.setTextColor(255, 255, 255);
+        doc.setFillColor(...NAVY);
+        doc.rect(margin, y - 10, maxWidth, 16, 'F');
+        let x = margin;
+        for (const col of cols) {
+          doc.text(col.label, col.align === 'right' ? x + col.width - 4 : x + 4, y, { align: col.align === 'right' ? 'right' : 'left' });
+          x += col.width;
+        }
+        y += 14;
+      };
+      drawSummaryHeader();
       doc.setFont('helvetica', 'normal');
-      doc.setFontSize(10);
-      doc.setTextColor(...MUTED);
-      for (const d of sortedDates) {
-        if (y > pageHeight - margin) newPage();
-        const label = d === 'No Date' ? 'Undated' : formatDate(d);
-        const count = byDate.get(d)!.length;
-        doc.text(`${label}`, margin, y);
-        doc.text(`${count} case${count > 1 ? 's' : ''}`, pageWidth - margin, y, { align: 'right' });
-        y += 16;
-      }
+      doc.setFontSize(8.5);
+      doc.setTextColor(...NAVY);
+      diagnosisGroups.forEach((g, i) => {
+        if (y > pageHeight - margin) { newPage(); drawSummaryHeader(); }
+        if (i % 2 === 1) {
+          doc.setFillColor(248, 250, 252);
+          doc.rect(margin, y - 9, maxWidth, 14, 'F');
+        }
+        const outcomeSummary = g.outcomes.length === 0 ? '—' : g.outcomes.slice(0, 2).join('; ') + (g.outcomes.length > 2 ? ` +${g.outcomes.length - 2} more` : '');
+        const cells = [
+          g.diagnosis, g.rows.length, g.categoryCounts.Major, g.categoryCounts.Minor,
+          g.categoryCounts.Bedside, g.categoryCounts.Endoscopy, g.categoryCounts.Others, outcomeSummary,
+        ];
+        let x = margin;
+        cells.forEach((cell, ci) => {
+          const col = cols[ci];
+          const text = doc.splitTextToSize(String(cell), col.width - 6)[0] as string;
+          doc.text(text, col.align === 'right' ? x + col.width - 4 : x + 4, y, { align: col.align === 'right' ? 'right' : 'left', maxWidth: col.width - 6 });
+          x += col.width;
+        });
+        y += 14;
+      });
       newPage();
 
       // ---- Case Pages ----
@@ -314,9 +355,13 @@ export default function SurgicalLogbook() {
       y += 26;
 
       const sortedRows = [...filtered].sort((a, b) => (a.surgery.surgery_date || '').localeCompare(b.surgery.surgery_date || ''));
-      let compactOnPage = 0;
 
-      const drawImageGrid = (paths: string[], label: string, thumbSize: number, perRow: number) => {
+      // Sizes images to fill the available row width for however many
+      // images this specific case actually has (up to maxThumb and
+      // perRowMax), instead of a fixed thumbnail size regardless of
+      // count — a case with 1-2 photos gets meaningfully larger images
+      // rather than leaving the rest of the row blank.
+      const drawImageGrid = (paths: string[], label: string, maxThumb: number, perRowMax: number) => {
         const withData = paths.map((p) => imageDataMap.get(p)).filter((d): d is LoadedImage => !!d);
         if (withData.length === 0) return;
         if (y + 16 > pageHeight - margin) newPage();
@@ -325,11 +370,14 @@ export default function SurgicalLogbook() {
         doc.setTextColor(...TEAL);
         doc.text(label, margin, y);
         y += 12;
+        const gap = 8;
+        const perRow = Math.min(perRowMax, withData.length);
+        const thumbSize = Math.min(maxThumb, Math.floor((maxWidth - (perRow - 1) * gap) / perRow));
         let col = 0;
         for (const img of withData) {
-          if (col === perRow) { col = 0; y += thumbSize + 8; }
+          if (col === perRow) { col = 0; y += thumbSize + gap; }
           if (y + thumbSize > pageHeight - margin) { newPage(); col = 0; }
-          const x = margin + col * (thumbSize + 8);
+          const x = margin + col * (thumbSize + gap);
           const ratio = img.width / img.height;
           let drawW = thumbSize, drawH = thumbSize;
           if (ratio > 1) drawH = thumbSize / ratio; else drawW = thumbSize * ratio;
@@ -367,16 +415,25 @@ export default function SurgicalLogbook() {
         y += big ? 14 : 11;
       };
 
-      sortedRows.forEach((r, rowIndex) => {
+      // Tracks whether anything has been drawn on the current page yet
+      // from this loop's perspective — lets a short case be followed
+      // immediately by the next one on the same page (no forced blank
+      // page), while still starting each Major case cleanly and adding a
+      // divider between cases that share a page.
+      let sectionFresh = true;
+
+      sortedRows.forEach((r) => {
         const category = categorize(r.surgery);
         const isMajor = category === 'Major';
-        const isLastRow = rowIndex === sortedRows.length - 1;
 
         if (isMajor) {
-          // Every major case starts on its own fresh page and gets a
-          // generous, complete layout — patient details, investigations,
-          // full operative notes, and larger photos.
-          if (y > margin + 5) newPage();
+          // Major cases always start at the top of a page (their own
+          // generous layout — patient details, investigations, full
+          // operative notes, larger photos — deserves a clean start) but,
+          // unlike before, do NOT force a trailing blank page afterward;
+          // whatever follows continues right below on the same page.
+          if (!sectionFresh) newPage();
+          sectionFresh = true;
           drawCaseHeader(r, true);
 
           if (r.patient?.diagnosis) {
@@ -435,18 +492,26 @@ export default function SurgicalLogbook() {
             y += 6;
           }
 
-          drawImageGrid(r.surgery.image_paths || [], 'Intra-operative / Specimen Photos', 130, 3);
-          drawImageGrid(r.surgery.consent_image_paths || [], 'Consent Page', 130, 3);
-
-          // Every major case gets its own dedicated page(s) — the next
-          // case (of any kind) always starts fresh, unless this was the
-          // last case (nothing to reserve a blank page for).
-          if (!isLastRow) newPage();
-          compactOnPage = 0;
+          drawImageGrid(r.surgery.image_paths || [], 'Intra-operative / Specimen Photos', 170, 3);
+          drawImageGrid(r.surgery.consent_image_paths || [], 'Consent Page', 170, 3);
+          sectionFresh = false;
         } else {
-          // Minor / Bedside / Endoscopy / Others: compact, up to 2 per page.
-          if (compactOnPage >= 2) newPage();
-          if (compactOnPage === 1) {
+          // Minor / Bedside / Endoscopy / Others: pack as many as fit on
+          // the page based on this case's estimated height, instead of a
+          // fixed count — a short case no longer leaves the rest of the
+          // page blank, and a page break only happens when content
+          // actually wouldn't fit.
+          const notesLineCount = r.surgery.procedure_notes
+            ? Math.min(3, (doc.splitTextToSize(r.surgery.procedure_notes, maxWidth) as string[]).length)
+            : 0;
+          const hasImages = (r.surgery.image_paths || []).some((p) => imageDataMap.has(p));
+          const estimatedHeight = 25 + 14 + notesLineCount * 11 + (hasImages ? 130 : 0) + 10;
+          const dividerHeight = sectionFresh ? 0 : 16;
+          if (y + dividerHeight + estimatedHeight > pageHeight - margin) {
+            newPage();
+            sectionFresh = true;
+          }
+          if (!sectionFresh) {
             doc.setDrawColor(...BORDER);
             doc.line(margin, y, pageWidth - margin, y);
             y += 16;
@@ -461,9 +526,9 @@ export default function SurgicalLogbook() {
             const wrapped = (doc.splitTextToSize(r.surgery.procedure_notes, maxWidth) as string[]).slice(0, 3);
             for (const w of wrapped) { doc.text(w, margin, y); y += 11; }
           }
-          drawImageGrid(r.surgery.image_paths || [], 'Photos', 70, 5);
+          drawImageGrid(r.surgery.image_paths || [], 'Photos', 100, 5);
           y += 10;
-          compactOnPage++;
+          sectionFresh = false;
         }
       });
 
@@ -837,9 +902,11 @@ function LogbookCaseEditor({ row, onClose, onSaved }: { row: LogbookRow; onClose
   const [procedureCategory, setProcedureCategory] = useState<ProcedureCategory | ''>(surgery.procedure_category || '');
   const [anaesthesia, setAnaesthesia] = useState(surgery.anaesthesia_type || '');
   const [procNotes, setProcNotes] = useState(surgery.procedure_notes || '');
+  const [outcome, setOutcome] = useState(surgery.outcome || '');
   const [surgeryDate, setSurgeryDate] = useState(surgery.surgery_date ? surgery.surgery_date.substring(0, 10) : '');
   const [diagnosis, setDiagnosis] = useState(patient?.diagnosis || '');
   const [saving, setSaving] = useState(false);
+  const categoryOptions = patient?.patient_type === 'ip' ? SURGERY_CATEGORIES : SURGERY_CATEGORIES.filter((c) => c !== 'Major');
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -849,6 +916,7 @@ function LogbookCaseEditor({ row, onClose, onSaved }: { row: LogbookRow; onClose
       procedure_category: procedureCategory || null,
       anaesthesia_type: anaesthesia,
       procedure_notes: procNotes,
+      outcome: outcome || null,
       surgery_date: surgeryDate || null,
     }).eq('id', surgery.id);
     if (patient) {
@@ -878,7 +946,7 @@ function LogbookCaseEditor({ row, onClose, onSaved }: { row: LogbookRow; onClose
               <label className="block text-sm font-medium text-slate-600 mb-1.5">Classification</label>
               <select value={procedureCategory} onChange={(e) => setProcedureCategory(e.target.value as ProcedureCategory | '')} className="form-input bg-white">
                 <option value="">Select...</option>
-                {SURGERY_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                {categoryOptions.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
             <div>
@@ -897,6 +965,10 @@ function LogbookCaseEditor({ row, onClose, onSaved }: { row: LogbookRow; onClose
           <div>
             <label className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Notes / Intra-op Findings</label>
             <textarea value={procNotes} onChange={(e) => setProcNotes(e.target.value)} rows={5} className="form-input resize-none" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-600 mb-1.5">Clinical Outcome</label>
+            <textarea value={outcome} onChange={(e) => setOutcome(e.target.value)} rows={2} className="form-input resize-none" placeholder="e.g. Uneventful recovery, Wound infection, Readmitted..." />
           </div>
           <button type="submit" disabled={saving} className="w-full py-2.5 bg-sky-600 text-white rounded-lg font-medium hover:bg-sky-700 transition disabled:opacity-60">
             {saving ? 'Saving...' : 'Save Changes'}

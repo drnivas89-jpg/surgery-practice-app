@@ -1,4 +1,4 @@
-import { Attendance, Hospital, MonthlyEntry, Patient, Payment, Surgery } from './types';
+import { Attendance, Hospital, MonthlyEntry, Patient, Payment, RevenueTransaction, Surgery } from './types';
 import { getColSummary } from './col';
 
 export const SURGERY_CATEGORIES = ['Major', 'Minor', 'Bedside', 'Endoscopy', 'Others'] as const;
@@ -51,6 +51,7 @@ export interface DailyRow {
   date: string;
   hospitalName: string;
   attendanceStatusLabel: string | null;
+  colReason: string | null;
   opCount: number;
   ipCount: number;
   opinionCount: number;
@@ -108,6 +109,8 @@ export interface BuildHospitalSummariesParams {
   payments: Payment[];
   surgeries: Surgery[];
   monthlyEntries: MonthlyEntry[];
+  /** Optional — multiple discrete fee entries per hospital+day, summed alongside monthly_entries/patients/payments. */
+  revenueTransactions?: RevenueTransaction[];
   attendance: Attendance[];
   rangeStart: string; // yyyy-mm-dd, inclusive
   rangeEnd: string;   // yyyy-mm-dd, inclusive
@@ -122,6 +125,7 @@ export interface BuildHospitalSummariesParams {
 // rows are possible in the date-wise table.
 export function buildHospitalSummaries(params: BuildHospitalSummariesParams): HospitalSummary[] {
   const { hospitals, patients, payments, surgeries, monthlyEntries, attendance, rangeStart, rangeEnd, todayStr } = params;
+  const revenueTransactions = params.revenueTransactions || [];
 
   const patientById = new Map(patients.map((p) => [p.id, p]));
 
@@ -143,6 +147,7 @@ export function buildHospitalSummaries(params: BuildHospitalSummariesParams): Ho
     const d = (me.entry_date || me.month).substring(0, 10);
     return d >= rangeStart && d <= rangeEnd;
   });
+  const rangeRevenueTxns = revenueTransactions.filter((rt) => rt.entry_date >= rangeStart && rt.entry_date <= rangeEnd);
   const rangeAttendance = attendance.filter((a) => a.attendance_date >= rangeStart && a.attendance_date <= rangeEnd);
 
   const elapsedDates = enumerateDates(rangeStart, rangeEnd < todayStr ? rangeEnd : todayStr);
@@ -151,21 +156,27 @@ export function buildHospitalSummaries(params: BuildHospitalSummariesParams): Ho
     const hospEntries = rangeEntries.filter((me) => me.hospital_id === h.id);
     const hospPatients = rangePatients.filter((p) => p.hospital_id === h.id);
     const hospPayments = rangePayments.filter((pay) => pay.hospital_id === h.id);
+    const hospRevenueTxns = rangeRevenueTxns.filter((rt) => rt.hospital_id === h.id);
     const hospSurgeries = rangeSurgeries.filter((s) => patientById.get(s.patient_id)?.hospital_id === h.id);
 
-    const opCount = hospEntries.reduce((s, me) => s + me.op_patients, 0);
-    const ipCount = hospPatients.filter((p) => p.patient_type === 'ip').length;
-    const opinionCount = hospEntries.reduce((s, me) => s + me.opinion_patients, 0);
+    const opCount = hospEntries.reduce((s, me) => s + me.op_patients, 0)
+      + hospRevenueTxns.reduce((s, rt) => s + rt.op_count, 0);
+    const ipCount = hospPatients.filter((p) => p.patient_type === 'ip').length
+      + hospRevenueTxns.reduce((s, rt) => s + rt.ip_count, 0);
+    const opinionCount = hospEntries.reduce((s, me) => s + me.opinion_patients, 0)
+      + hospRevenueTxns.reduce((s, rt) => s + rt.opinion_count, 0);
 
     const surgeryCategories = emptyCategoryCounts();
     hospSurgeries.forEach((s) => { surgeryCategories[categorizeSurgery(s)]++; });
 
     const feesGenerated =
       hospPatients.reduce((s, p) => s + (p.fees || 0), 0) +
-      hospEntries.reduce((s, me) => s + me.fees_generated, 0);
+      hospEntries.reduce((s, me) => s + me.fees_generated, 0) +
+      hospRevenueTxns.reduce((s, rt) => s + rt.amount_generated, 0);
     const feesReceived =
       hospPayments.reduce((s, p) => s + p.amount, 0) +
-      hospEntries.reduce((s, me) => s + me.fees_received, 0);
+      hospEntries.reduce((s, me) => s + me.fees_received, 0) +
+      hospRevenueTxns.reduce((s, rt) => s + rt.amount_received, 0);
 
     // Pending is all-time-to-date, not limited to the selected range — an
     // outstanding balance doesn't reset when you change the filter.
@@ -174,12 +185,15 @@ export function buildHospitalSummaries(params: BuildHospitalSummariesParams): Ho
     const allHospEntries = monthlyEntries.filter(
       (me) => me.hospital_id === h.id && (me.entry_date || me.month).substring(0, 10) <= todayStr
     );
+    const allHospRevenueTxns = revenueTransactions.filter((rt) => rt.hospital_id === h.id && rt.entry_date <= todayStr);
     const overallFees =
       allHospPatients.reduce((s, p) => s + (p.fees || 0), 0) +
-      allHospEntries.reduce((s, me) => s + me.fees_generated, 0);
+      allHospEntries.reduce((s, me) => s + me.fees_generated, 0) +
+      allHospRevenueTxns.reduce((s, rt) => s + rt.amount_generated, 0);
     const overallReceived =
       allHospPayments.reduce((s, p) => s + p.amount, 0) +
-      allHospEntries.reduce((s, me) => s + me.fees_received, 0);
+      allHospEntries.reduce((s, me) => s + me.fees_received, 0) +
+      allHospRevenueTxns.reduce((s, rt) => s + rt.amount_received, 0);
     const overallPending = overallFees - overallReceived;
 
     const hospAtt = rangeAttendance.filter((a) => a.hospital_id === h.id);
@@ -195,9 +209,9 @@ export function buildHospitalSummaries(params: BuildHospitalSummariesParams): Ho
     // this hospital only, since COL is hospital-strict.
     const hospColSummary = getColSummary(attendance, h.id);
 
-    const dayMap = new Map<string, { date: string; attendance: Attendance[]; patients: Patient[]; surgeries: Surgery[]; payments: Payment[]; entry: MonthlyEntry | null }>();
+    const dayMap = new Map<string, { date: string; attendance: Attendance[]; patients: Patient[]; surgeries: Surgery[]; payments: Payment[]; revenueTxns: RevenueTransaction[]; entry: MonthlyEntry | null }>();
     const ensureDay = (date: string) => {
-      if (!dayMap.has(date)) dayMap.set(date, { date, attendance: [], patients: [], surgeries: [], payments: [], entry: null });
+      if (!dayMap.has(date)) dayMap.set(date, { date, attendance: [], patients: [], surgeries: [], payments: [], revenueTxns: [], entry: null });
       return dayMap.get(date)!;
     };
     (elapsedDates || []).forEach((d) => ensureDay(d));
@@ -209,6 +223,7 @@ export function buildHospitalSummaries(params: BuildHospitalSummariesParams): Ho
     });
     hospSurgeries.forEach((s) => { if (s.surgery_date) ensureDay(s.surgery_date.substring(0, 10)).surgeries.push(s); });
     hospPayments.forEach((pay) => { if (pay.payment_date) ensureDay(pay.payment_date.substring(0, 10)).payments.push(pay); });
+    hospRevenueTxns.forEach((rt) => { ensureDay(rt.entry_date).revenueTxns.push(rt); });
 
     const days: DailyRow[] = Array.from(dayMap.values())
       .sort((a, b) => b.date.localeCompare(a.date))
@@ -221,18 +236,24 @@ export function buildHospitalSummaries(params: BuildHospitalSummariesParams): Ho
             ? `Leave (${LEAVE_BREAKDOWN_KEYS.find((k) => k.key === classifyLeave(attRow))?.label || 'Other'})`
             : 'Extra Duty'
           : null;
-        const dayOp = d.entry?.op_patients || 0;
-        const dayIp = d.patients.filter((p) => p.patient_type === 'ip').length;
-        const dayOpinion = d.entry?.opinion_patients || 0;
+        const colReason = attRow && attRow.status === 'extra_duty' && (attRow.extra_duty_type || '').toLowerCase() === 'col'
+          ? attRow.col_reason
+          : null;
+        const dayOp = (d.entry?.op_patients || 0) + d.revenueTxns.reduce((s, rt) => s + rt.op_count, 0);
+        const dayIp = d.patients.filter((p) => p.patient_type === 'ip').length + d.revenueTxns.reduce((s, rt) => s + rt.ip_count, 0);
+        const dayOpinion = (d.entry?.opinion_patients || 0) + d.revenueTxns.reduce((s, rt) => s + rt.opinion_count, 0);
         const daySurgeries = d.surgeries.length;
-        const dayFeesGenerated = (d.entry?.fees_generated || 0) + d.patients.reduce((s, p) => s + (p.fees || 0), 0);
-        const dayFeesReceived = (d.entry?.fees_received || 0) + d.payments.reduce((s, p) => s + p.amount, 0);
-        const hasAnyRecord = d.attendance.length > 0 || !!d.entry || d.patients.length > 0 || d.surgeries.length > 0 || d.payments.length > 0;
+        const dayFeesGenerated = (d.entry?.fees_generated || 0) + d.patients.reduce((s, p) => s + (p.fees || 0), 0)
+          + d.revenueTxns.reduce((s, rt) => s + rt.amount_generated, 0);
+        const dayFeesReceived = (d.entry?.fees_received || 0) + d.payments.reduce((s, p) => s + p.amount, 0)
+          + d.revenueTxns.reduce((s, rt) => s + rt.amount_received, 0);
+        const hasAnyRecord = d.attendance.length > 0 || !!d.entry || d.patients.length > 0 || d.surgeries.length > 0 || d.payments.length > 0 || d.revenueTxns.length > 0;
         const isZeroActivity = attendanceStatusLabel === 'Present' && dayOp === 0 && dayIp === 0 && dayOpinion === 0;
         return {
           date: d.date,
           hospitalName: h.name,
           attendanceStatusLabel,
+          colReason,
           opCount: dayOp,
           ipCount: dayIp,
           opinionCount: dayOpinion,

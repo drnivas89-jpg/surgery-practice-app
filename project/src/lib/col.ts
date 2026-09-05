@@ -5,6 +5,7 @@ export interface ColCreditDate {
   hospitalId: string;
   hospitalName: string;
   attendanceId: string;
+  reason: string | null;
 }
 
 export interface ColUsageEntry {
@@ -123,6 +124,7 @@ export function getColSummary(attendance: Attendance[], hospitalId?: string, cur
     hospitalId: c.hospital_id,
     hospitalName: c.hospital?.name || '—',
     attendanceId: c.id,
+    reason: c.col_reason,
   }));
   const unclaimed = creditDates.filter((c) => !claimed.has(claimKey(c.hospitalId, c.date)));
   const isExpired = (date: string) => Number(date.substring(0, 4)) < currentYear;

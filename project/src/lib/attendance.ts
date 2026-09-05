@@ -8,6 +8,7 @@ export interface AttendanceChoiceState {
   dutySubtype: string;
   extraDutyKind: ExtraDutyKind;
   extraDutyOthersText: string;
+  colReason: string;
   leaveType: LeaveTypeSlug | '';
   compensatedWorkingDate: string;
 }
@@ -26,6 +27,7 @@ export function defaultAttendanceChoiceState(): AttendanceChoiceState {
     dutySubtype: '',
     extraDutyKind: 'col',
     extraDutyOthersText: '',
+    colReason: '',
     leaveType: '',
     compensatedWorkingDate: '',
   };
@@ -48,7 +50,7 @@ export function attendanceToChoiceState(a: Attendance | null): AttendanceChoiceS
 
   if (a.status === 'extra_duty') {
     const raw = (a.extra_duty_type || '').toLowerCase();
-    if (raw === 'col') return { ...base, choice: 'extra_duty', extraDutyKind: 'col' };
+    if (raw === 'col') return { ...base, choice: 'extra_duty', extraDutyKind: 'col', colReason: a.col_reason || '' };
     if (raw === 'extra') return { ...base, choice: 'extra_duty', extraDutyKind: 'extra' };
     return { ...base, choice: 'extra_duty', extraDutyKind: 'others', extraDutyOthersText: a.extra_duty_type || '' };
   }
@@ -83,7 +85,7 @@ export function validateAttendanceChoice(state: AttendanceChoiceState): string |
 // the mapping itself, so they can never disagree on the DB shape.
 export function buildAttendanceFields(state: AttendanceChoiceState): Pick<
   Attendance,
-  'status' | 'duty_type' | 'duty_subtype' | 'leave_type' | 'extra_duty_type' | 'compensated_working_date'
+  'status' | 'duty_type' | 'duty_subtype' | 'leave_type' | 'extra_duty_type' | 'compensated_working_date' | 'col_reason'
 > {
   switch (state.choice) {
     case 'duty':
@@ -94,6 +96,7 @@ export function buildAttendanceFields(state: AttendanceChoiceState): Pick<
         leave_type: null,
         extra_duty_type: null,
         compensated_working_date: null,
+        col_reason: null,
       };
     case 'duty24':
       return {
@@ -103,6 +106,7 @@ export function buildAttendanceFields(state: AttendanceChoiceState): Pick<
         leave_type: null,
         extra_duty_type: null,
         compensated_working_date: null,
+        col_reason: null,
       };
     case 'extra_duty': {
       const extra_duty_type = state.extraDutyKind === 'others' ? state.extraDutyOthersText.trim() : state.extraDutyKind;
@@ -113,6 +117,7 @@ export function buildAttendanceFields(state: AttendanceChoiceState): Pick<
         leave_type: null,
         extra_duty_type,
         compensated_working_date: null,
+        col_reason: state.extraDutyKind === 'col' ? state.colReason.trim() || null : null,
       };
     }
     case 'leave':
@@ -123,6 +128,7 @@ export function buildAttendanceFields(state: AttendanceChoiceState): Pick<
         leave_type: state.leaveType || null,
         extra_duty_type: null,
         compensated_working_date: state.leaveType === 'col' ? state.compensatedWorkingDate : null,
+        col_reason: null,
       };
   }
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { Patient, Surgery, FollowUp, FollowUpVisit, Payment, SurgeryType, Investigation, Vitals, ProcedureCategory } from '@/lib/types';
@@ -11,6 +11,9 @@ import {
 } from 'lucide-react';
 
 const PROCEDURE_CATEGORIES: ProcedureCategory[] = ['Major', 'Minor', 'Bedside', 'Endoscopy', 'Others'];
+// Major surgeries are reserved for IP patients — OP/Opinion consults can
+// only log day-care/minor interventions (Minor, Bedside, Endoscopy, Others).
+const DAY_CARE_CATEGORIES: ProcedureCategory[] = ['Minor', 'Bedside', 'Endoscopy', 'Others'];
 
 interface PatientDetailProps {
   patientId: string;
@@ -62,6 +65,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   const [surgeryRole, setSurgeryRole] = useState<'done_by_me' | 'assisted_by_me'>('done_by_me');
   const [anaesthesia, setAnaesthesia] = useState('');
   const [procNotes, setProcNotes] = useState('');
+  const [outcome, setOutcome] = useState('');
   const [surgeryDate, setSurgeryDate] = useState('');
   const [surgeryImages, setSurgeryImages] = useState<File[]>([]);
   const [existingSurgeryImages, setExistingSurgeryImages] = useState<string[]>([]);
@@ -115,7 +119,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   const [vRR, setVRR] = useState('');
   const [vNotes, setVNotes] = useState('');
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const [{ data: p }, { data: s }, { data: f }, { data: fv }, { data: pay }, { data: st }, { data: inv }, { data: vit }] = await Promise.all([
       supabase.from('patients').select('*, hospital:hospitals(*)').eq('id', patientId).maybeSingle(),
       supabase.from('surgeries').select('*').eq('patient_id', patientId).order('created_at', { ascending: false }),
@@ -147,9 +151,9 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
       if (url) urlMap[path] = url;
     }
     setImageUrls(urlMap);
-  };
+  }, [patientId]);
 
-  useEffect(() => { load(); }, [patientId]);
+  useEffect(() => { load(); }, [load]);
 
   // Records a Present day for the patient's hospital, on the given date
   // (falling back to today if blank), and offers the duty-type prompt if
@@ -164,7 +168,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   const resetSurgeryForm = () => {
     setEditingSurgeryId(null);
     setProcName(''); setSurgeryType(''); setProcedureCategory(''); setImplants('');
-    setSurgeryRole('done_by_me'); setAnaesthesia(''); setProcNotes('');
+    setSurgeryRole('done_by_me'); setAnaesthesia(''); setProcNotes(''); setOutcome('');
     setSurgeryDate(''); setSurgeryImages([]); setExistingSurgeryImages([]);
     setConsentImages([]); setExistingConsentImages([]);
   };
@@ -195,6 +199,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
     setSurgeryRole(s.role === 'assisted_by_me' ? 'assisted_by_me' : 'done_by_me');
     setAnaesthesia(s.anaesthesia_type || '');
     setProcNotes(s.procedure_notes || '');
+    setOutcome(s.outcome || '');
     setSurgeryDate(s.surgery_date ? s.surgery_date.substring(0, 10) : '');
     setExistingSurgeryImages(s.image_paths || []);
     setSurgeryImages([]);
@@ -219,7 +224,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
     const payload = {
       procedure_name: procName, surgery_type: surgeryType, role: surgeryRole,
       procedure_category: procedureCategory || null, implants,
-      anaesthesia_type: anaesthesia, procedure_notes: procNotes,
+      anaesthesia_type: anaesthesia, procedure_notes: procNotes, outcome: outcome || null,
       surgery_date: surgeryDate || null, image_paths: imagePaths,
       consent_image_paths: consentPaths,
     };
@@ -668,6 +673,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
                     <p className="text-xs text-slate-500 mt-2 flex items-start gap-1.5"><Wrench className="w-3.5 h-3.5 text-slate-400 flex-shrink-0 mt-0.5" /> <span><span className="text-slate-400">Implants:</span> {s.implants}</span></p>
                   )}
                   {s.procedure_notes && <p className="text-sm text-slate-600 mt-2 whitespace-pre-wrap">{s.procedure_notes}</p>}
+                  {s.outcome && <p className="text-xs text-emerald-700 bg-emerald-50 rounded-lg px-2.5 py-1.5 mt-2 inline-block">Outcome: {s.outcome}</p>}
                   {s.image_paths && s.image_paths.length > 0 && (
                     <div className="mt-3">
                       <p className="text-xs text-slate-400 mb-1.5">Surgery Images</p>
@@ -837,8 +843,11 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
                 <label htmlFor="pd-procedure-category" className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Classification</label>
                 <select id="pd-procedure-category" name="procedureCategory" value={procedureCategory} onChange={(e) => setProcedureCategory(e.target.value as ProcedureCategory | '')} className="form-input bg-white">
                   <option value="">Select classification...</option>
-                  {PROCEDURE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                  {(patient.patient_type === 'ip' ? PROCEDURE_CATEGORIES : DAY_CARE_CATEGORIES).map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
+                {patient.patient_type !== 'ip' && (
+                  <p className="text-xs text-slate-400 mt-1">Major surgeries are logged under IP patients only — OP/Opinion consults are limited to day-care procedures.</p>
+                )}
               </div>
               <div>
                 <label htmlFor="pd-surgery-type" className="block text-sm font-medium text-slate-600 mb-1.5">Surgery Type / Technique</label>
@@ -867,6 +876,10 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
             <div>
               <label htmlFor="pd-proc-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Notes / Intra-op Findings</label>
               <textarea id="pd-proc-notes" name="procNotes" value={procNotes} onChange={(e) => setProcNotes(e.target.value)} rows={4} className="form-input resize-none" />
+            </div>
+            <div>
+              <label htmlFor="pd-outcome" className="block text-sm font-medium text-slate-600 mb-1.5">Clinical Outcome</label>
+              <textarea id="pd-outcome" name="outcome" value={outcome} onChange={(e) => setOutcome(e.target.value)} rows={2} className="form-input resize-none" placeholder="e.g. Uneventful recovery, Wound infection, Readmitted..." />
             </div>
             <div>
               <label htmlFor="pd-implants" className="block text-sm font-medium text-slate-600 mb-1.5 flex items-center gap-1.5">

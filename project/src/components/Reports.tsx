@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { Hospital, MonthlyEntry, Surgery, Patient, Attendance, Payment } from '@/lib/types';
+import { Hospital, MonthlyEntry, Surgery, Patient, Attendance, Payment, RevenueTransaction } from '@/lib/types';
 import { formatCurrency, formatDate, todayLocalDateStr, monthRangeLocal } from '@/lib/helpers';
 import { getColSummary } from '@/lib/col';
 import { buildHospitalSummaries, HospitalSummary, SURGERY_CATEGORIES, LEAVE_BREAKDOWN_KEYS, LeaveBreakdown } from '@/lib/hospitalSummary';
@@ -117,6 +117,7 @@ export default function Reports() {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [attendance, setAttendance] = useState<Attendance[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
+  const [revenueTransactions, setRevenueTransactions] = useState<RevenueTransaction[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [level, setLevel] = useState<Level>('global');
@@ -131,13 +132,14 @@ export default function Reports() {
   const [endDate, setEndDate] = useState(defaultEnd);
 
   const load = async () => {
-    const [{ data: h }, { data: me }, { data: s }, { data: p }, { data: att }, { data: pay }] = await Promise.all([
+    const [{ data: h }, { data: me }, { data: s }, { data: p }, { data: att }, { data: pay }, { data: rt }] = await Promise.all([
       supabase.from('hospitals').select('*').order('name'),
       supabase.from('monthly_entries').select('*, hospital:hospitals(*)').order('month', { ascending: false }),
       supabase.from('surgeries').select('*, patient:patients(*)').order('surgery_date', { ascending: false }),
       supabase.from('patients').select('*, hospital:hospitals(*)').order('created_at', { ascending: false }),
       supabase.from('attendance').select('*, hospital:hospitals(*)').order('attendance_date', { ascending: false }),
       supabase.from('payments').select('*, patient:patients(*)'),
+      supabase.from('revenue_transactions').select('*, hospital:hospitals(*)'),
     ]);
     setHospitals(h || []);
     setMonthlyEntries(me || []);
@@ -145,6 +147,7 @@ export default function Reports() {
     setPatients(p || []);
     setAttendance(att || []);
     setPayments(pay || []);
+    setRevenueTransactions(rt || []);
     setLoading(false);
   };
 
@@ -155,7 +158,7 @@ export default function Reports() {
   const rangeEnd = endDate || todayStr;
 
   const summaries: HospitalSummary[] = buildHospitalSummaries({
-    hospitals, patients, payments, surgeries, monthlyEntries, attendance,
+    hospitals, patients, payments, surgeries, monthlyEntries, revenueTransactions, attendance,
     rangeStart, rangeEnd, todayStr,
   });
   const activeSummaries = summaries.filter((hs) => hs.hasActivity);
@@ -238,14 +241,14 @@ export default function Reports() {
 
     if (level === 'hospital' && selectedHospitalSummary) {
       const dateRows = [
-        ['Date', 'Attendance', 'OP', 'IP', 'Opinion', 'Surgeries', 'Fees Generated', 'Fees Received', 'Pending'],
+        ['Date', 'Attendance', 'COL Reason', 'OP', 'IP', 'Opinion', 'Surgeries', 'Fees Generated', 'Fees Received', 'Pending'],
         ...selectedHospitalSummary.days.map((d) => [
-          formatDate(d.date), d.attendanceStatusLabel || 'No Entry', d.opCount, d.ipCount, d.opinionCount,
+          formatDate(d.date), d.attendanceStatusLabel || 'No Entry', d.colReason || '', d.opCount, d.ipCount, d.opinionCount,
           d.surgeriesCount, d.feesGenerated, d.feesReceived, d.pendingFees,
         ]),
       ];
       const dateSheet = XLSX.utils.aoa_to_sheet(dateRows);
-      dateSheet['!cols'] = Array(9).fill({ wch: 14 });
+      dateSheet['!cols'] = Array(10).fill({ wch: 14 });
       XLSX.utils.book_append_sheet(wb, dateSheet, 'Date-wise');
     }
 
@@ -261,13 +264,13 @@ export default function Reports() {
         title: `Date-wise Report — ${selectedHospitalSummary.hospital.name}`,
         subtitle: rangeLabel,
         columns: [
-          { label: 'Date', width: 70 }, { label: 'Attendance', width: 80 },
-          { label: 'OP', width: 30, align: 'right' }, { label: 'IP', width: 30, align: 'right' }, { label: 'Opinion', width: 45, align: 'right' },
-          { label: 'Surgeries', width: 50, align: 'right' }, { label: 'Fees Gen.', width: 65, align: 'right' },
-          { label: 'Fees Rec.', width: 65, align: 'right' }, { label: 'Pending', width: 65, align: 'right' },
+          { label: 'Date', width: 60 }, { label: 'Attendance', width: 70 }, { label: 'COL Reason', width: 85 },
+          { label: 'OP', width: 25, align: 'right' }, { label: 'IP', width: 25, align: 'right' }, { label: 'Opinion', width: 40, align: 'right' },
+          { label: 'Surgeries', width: 45, align: 'right' }, { label: 'Fees Gen.', width: 60, align: 'right' },
+          { label: 'Fees Rec.', width: 60, align: 'right' }, { label: 'Pending', width: 60, align: 'right' },
         ],
         rows: selectedHospitalSummary.days.map((d) => [
-          formatDate(d.date), d.attendanceStatusLabel || 'No Entry', d.opCount, d.ipCount, d.opinionCount,
+          formatDate(d.date), d.attendanceStatusLabel || 'No Entry', d.colReason || '', d.opCount, d.ipCount, d.opinionCount,
           d.surgeriesCount, formatCurrency(d.feesGenerated), formatCurrency(d.feesReceived), formatCurrency(d.pendingFees),
         ]),
       });
