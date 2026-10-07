@@ -906,7 +906,9 @@ function LogbookCaseEditor({ row, onClose, onSaved }: { row: LogbookRow; onClose
   const [surgeryDate, setSurgeryDate] = useState(surgery.surgery_date ? surgery.surgery_date.substring(0, 10) : '');
   const [diagnosis, setDiagnosis] = useState(patient?.diagnosis || '');
   const [saving, setSaving] = useState(false);
-  const categoryOptions = patient?.patient_type === 'ip' ? SURGERY_CATEGORIES : SURGERY_CATEGORIES.filter((c) => c !== 'Major');
+  // Major is reserved for IP and surgical-case entries; OP/Opinion are day-care only.
+  const dayCareOnly = patient?.patient_type === 'op' || patient?.patient_type === 'opinion';
+  const categoryOptions = dayCareOnly ? SURGERY_CATEGORIES.filter((c) => c !== 'Major') : SURGERY_CATEGORIES;
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();

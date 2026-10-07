@@ -1,4 +1,14 @@
 import { supabase } from './supabase';
+import type { Patient } from './types';
+
+// Surgical case entries (study log) are saved with no OP/IP/Opinion
+// patient_type and treatment_type 'surgical' — that pairing never occurs
+// for practice registrations (IP surgical always has patient_type 'ip';
+// legacy pre-patient_type rows have treatment_type null), so it reliably
+// marks a study case. They carry no fees and don't touch daily OP/IP counts.
+export function isSurgicalCase(p: Pick<Patient, 'patient_type' | 'treatment_type'>): boolean {
+  return p.patient_type === null && p.treatment_type === 'surgical';
+}
 
 export async function generateUniquePatientId(userId: string, hospitalId: string): Promise<string> {
   const now = new Date();

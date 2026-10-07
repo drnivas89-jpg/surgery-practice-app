@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { Patient, Surgery, FollowUp, FollowUpVisit, Payment, SurgeryType, Investigation, Vitals, ProcedureCategory } from '@/lib/types';
-import { formatDate, formatCurrency, uploadImage, getImageUrl, ensurePresentAttendance, todayLocalDateStr } from '@/lib/helpers';
+import { formatDate, formatCurrency, uploadImage, getImageUrl, ensurePresentAttendance, todayLocalDateStr, isSurgicalCase } from '@/lib/helpers';
 import PrescriptionTable, { DEFAULT_PRESCRIPTION } from './PrescriptionTable';
 import PresentDutyPrompt from './PresentDutyPrompt';
 import {
@@ -498,6 +498,10 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   const totalReceived = payments.reduce((s, p) => s + p.amount, 0);
   const pending = (patient.fees || 0) - totalReceived;
   const numberLabel = patient.patient_type ? PATIENT_NUMBER_LABEL[patient.patient_type] : null;
+  // Study-purpose surgical cases carry no fees and no admission/discharge.
+  const studyCase = isSurgicalCase(patient);
+  const tabs = studyCase ? TABS.filter((t) => t.id !== 'payments' && t.id !== 'discharge') : TABS;
+  const dayCareOnly = patient.patient_type === 'op' || patient.patient_type === 'opinion';
 
   return (
     <div className="space-y-6">
@@ -517,7 +521,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {onNewVisit && (
+          {onNewVisit && !studyCase && (
             <button onClick={() => onNewVisit(patient)} className="flex items-center gap-2 px-4 py-2 bg-sky-50 text-sky-600 rounded-lg text-sm font-medium hover:bg-sky-100 transition">
               <Plus className="w-4 h-4" /> Add Follow-up Visit
             </button>
@@ -530,7 +534,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
 
       {/* Tab bar */}
       <div className="flex items-center gap-1 overflow-x-auto border-b border-slate-200">
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t.id}
             onClick={() => setActiveTab(t.id)}
@@ -548,6 +552,9 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
           <div className="bg-white rounded-xl border border-slate-200 p-5">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <div><p className="text-xs text-slate-400 uppercase">Age / Sex</p><p className="text-sm font-medium text-slate-700 mt-1">{patient.age ? `${patient.age}y` : '—'} {patient.sex ? `/ ${patient.sex}` : ''}</p></div>
+              {studyCase && (
+                <div><p className="text-xs text-slate-400 uppercase">Date of Surgery</p><p className="text-sm font-medium text-slate-700 mt-1">{formatDate(patient.surgery_date)}</p></div>
+              )}
               {patient.patient_type === 'ip' && (
                 <div><p className="text-xs text-slate-400 uppercase">Admission</p><p className="text-sm font-medium text-slate-700 mt-1">{formatDate(patient.admission_date)}</p></div>
               )}
@@ -568,11 +575,13 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
                 <p className="text-sm text-sky-600 font-medium">A minor procedure was performed — see Surgery / Procedure tab.</p>
               </div>
             )}
+            {!studyCase && (
             <div className="mt-4 pt-4 border-t border-slate-100 grid grid-cols-3 gap-4">
               <div><p className="text-xs text-slate-400 uppercase">Total Fees</p><p className="text-lg font-bold text-slate-700">{formatCurrency(patient.fees || 0)}</p></div>
               <div><p className="text-xs text-slate-400 uppercase">Received</p><p className="text-lg font-bold text-emerald-600">{formatCurrency(totalReceived)}</p></div>
               <div><p className="text-xs text-slate-400 uppercase">Pending</p><p className={`text-lg font-bold ${pending > 0 ? 'text-red-600' : 'text-slate-500'}`}>{formatCurrency(pending)}</p></div>
             </div>
+            )}
           </div>
 
           <SectionCard icon={HeartPulse} iconColor="text-rose-500" title="Vitals" onAdd={() => { resetVitalsForm(); setShowVitalsForm(true); }} addLabel="Add Reading">
@@ -843,9 +852,9 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
                 <label htmlFor="pd-procedure-category" className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Classification</label>
                 <select id="pd-procedure-category" name="procedureCategory" value={procedureCategory} onChange={(e) => setProcedureCategory(e.target.value as ProcedureCategory | '')} className="form-input bg-white">
                   <option value="">Select classification...</option>
-                  {(patient.patient_type === 'ip' ? PROCEDURE_CATEGORIES : DAY_CARE_CATEGORIES).map((c) => <option key={c} value={c}>{c}</option>)}
+                  {(dayCareOnly ? DAY_CARE_CATEGORIES : PROCEDURE_CATEGORIES).map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
-                {patient.patient_type !== 'ip' && (
+                {dayCareOnly && (
                   <p className="text-xs text-slate-400 mt-1">Major surgeries are logged under IP patients only — OP/Opinion consults are limited to day-care procedures.</p>
                 )}
               </div>

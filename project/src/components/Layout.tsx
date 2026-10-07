@@ -23,7 +23,7 @@ const navSections: NavSection[] = [
   {
     title: 'Clinical',
     items: [
-      { id: 'patients', label: 'Patient Details', icon: Users },
+      { id: 'patients', label: 'Surgical Cases', icon: Users },
       { id: 'hospitals', label: 'Hospitals', icon: Building2 },
       { id: 'logbook', label: 'Surgical Logbook', icon: ClipboardList },
       { id: 'consent', label: 'Consent Proformas', icon: FileText },

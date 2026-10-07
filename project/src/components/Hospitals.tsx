@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { Hospital, MonthlyEntry, Attendance, Patient, ClassEntry, Payment, RevenueTransaction, Surgery } from '@/lib/types';
-import { formatDate, uploadImage, getImageUrl, ensurePresentAttendance, todayLocalDateStr, monthRangeLocal } from '@/lib/helpers';
+import { formatDate, uploadImage, getImageUrl, ensurePresentAttendance, todayLocalDateStr, monthRangeLocal, isSurgicalCase } from '@/lib/helpers';
 import { getColSummary } from '@/lib/col';
 import { buildHospitalSummaries, LEAVE_BREAKDOWN_KEYS } from '@/lib/hospitalSummary';
 import { AttendanceChoiceState, defaultAttendanceChoiceState, validateAttendanceChoice, buildAttendanceFields } from '@/lib/attendance';
@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import PatientForm from './PatientForm';
 import PatientRegistrationWizard from './PatientRegistrationWizard';
+import SurgicalCaseForm from './SurgicalCaseForm';
 import HospitalDailyTable from './HospitalDailyTable';
 import EditDayModal from './EditDayModal';
 import AttendanceStatusPicker from './AttendanceStatusPicker';
@@ -385,6 +386,24 @@ export default function Hospitals() {
             load();
           }}
           onCancel={() => setShowPatientForm(false)}
+        />
+      );
+    }
+    if (isSurgicalCase(editingPatient)) {
+      return (
+        <SurgicalCaseForm
+          hospitals={hospitals}
+          editPatient={editingPatient}
+          onDone={() => {
+            setShowPatientForm(false);
+            setEditingPatient(null);
+            setPatientSearch('');
+            load();
+          }}
+          onCancel={() => {
+            setShowPatientForm(false);
+            setEditingPatient(null);
+          }}
         />
       );
     }
