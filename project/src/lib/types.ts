@@ -2,6 +2,20 @@ export interface Hospital {
   id: string;
   user_id: string;
   name: string;
+  // Optional: absent until the gov-holidays migration has been applied.
+  is_government?: boolean;
+  created_at: string;
+}
+
+// A row exists only for a named holiday the doctor entered, or to cancel
+// a holiday (is_cancelled) — second Saturdays are holidays by default and
+// are never stored unless cancelled.
+export interface GovHoliday {
+  id: string;
+  user_id: string;
+  holiday_date: string;
+  name: string;
+  is_cancelled: boolean;
   created_at: string;
 }
 

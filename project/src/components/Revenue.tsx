@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Hospital, Patient, Payment, MonthlyEntry, RevenueTransaction } from '@/lib/types';
 import { formatCurrency, formatDate, todayLocalDateStr } from '@/lib/helpers';
+import { buildMonthlyFeeTally, sumFeeTally, formatMonth } from '@/lib/fees';
 import { IndianRupee, TrendingUp, Building2, Calendar, Plus, X, Trash2, Pencil, Activity, Receipt } from 'lucide-react';
 
 export default function Revenue() {
@@ -76,42 +77,33 @@ export default function Revenue() {
     return true;
   });
 
-  const filteredPatients = patients.filter((p) => {
-    if (selectedHospital !== 'all' && p.hospital_id !== selectedHospital) return false;
-    return true;
-  });
-
   const filteredRevenueTransactions = revenueTransactions.filter((rt) => {
     if (selectedHospital !== 'all' && rt.hospital_id !== selectedHospital) return false;
     if (selectedMonth !== 'all' && rt.entry_date.substring(0, 7) !== selectedMonth) return false;
     return true;
   });
 
-  const totalFees = filteredPatients.reduce((s, p) => s + (p.fees || 0), 0)
-    + filteredRevenueTransactions.reduce((s, rt) => s + rt.amount_generated, 0);
-  const totalReceived = filteredPayments.reduce((s, p) => s + p.amount, 0)
-    + filteredRevenueTransactions.reduce((s, rt) => s + rt.amount_received, 0);
-  const totalPending = totalFees - totalReceived;
+  // Fees are tallied per hospital per calendar month: a month's shortfall is
+  // pending, a month's overpayment is excess — never netted across months.
+  const feeTally = useMemo(
+    () => buildMonthlyFeeTally({ patients, payments, monthlyEntries, revenueTransactions }),
+    [patients, payments, monthlyEntries, revenueTransactions]
+  );
+  const filteredTally = feeTally.filter((t) =>
+    (selectedHospital === 'all' || t.hospitalId === selectedHospital) && (selectedMonth === 'all' || t.month === selectedMonth)
+  );
+  const totals = sumFeeTally(filteredTally);
+  const hospitalName = (id: string) => hospitals.find((h) => h.id === id)?.name || '—';
 
   const hospitalRevenue = hospitals.map((h) => {
-    const hospPatients = patients.filter((p) => p.hospital_id === h.id);
-    const hospPayments = payments.filter((p) => p.hospital_id === h.id);
-    const hospMonthly = monthlyEntries.filter((me) => me.hospital_id === h.id);
-    const hospTxns = revenueTransactions.filter((rt) => rt.hospital_id === h.id);
-    const feesFromPatients = hospPatients.reduce((s, p) => s + (p.fees || 0), 0);
-    const feesFromMonthly = hospMonthly.reduce((s, me) => s + me.fees_generated, 0);
-    const feesFromTxns = hospTxns.reduce((s, rt) => s + rt.amount_generated, 0);
-    const receivedFromPayments = hospPayments.reduce((s, p) => s + p.amount, 0);
-    const receivedFromMonthly = hospMonthly.reduce((s, me) => s + me.fees_received, 0);
-    const receivedFromTxns = hospTxns.reduce((s, rt) => s + rt.amount_received, 0);
-    const fees = feesFromPatients + feesFromMonthly + feesFromTxns;
-    const received = receivedFromPayments + receivedFromMonthly + receivedFromTxns;
+    const t = sumFeeTally(feeTally.filter((r) => r.hospitalId === h.id && (selectedMonth === 'all' || r.month === selectedMonth)));
     return {
       hospital: h,
-      fees,
-      received,
-      pending: fees - received,
-      patientCount: hospPatients.length,
+      fees: t.generated,
+      received: t.received,
+      pending: t.pending,
+      excess: t.excess,
+      patientCount: patients.filter((p) => p.hospital_id === h.id).length,
     };
   });
 
@@ -135,7 +127,7 @@ export default function Revenue() {
     }, {} as Record<string, { hospitalId: string; hospitalName: string; date: string; generated: number; received: number; op: number; ip: number; opinion: number; count: number }>)
   ).sort((a, b) => b.date.localeCompare(a.date));
 
-  const availableMonths = [...new Set(payments.map((p) => p.payment_date.substring(0, 7)))].sort().reverse();
+  const availableMonths = [...new Set(feeTally.map((t) => t.month))].sort().reverse();
 
   const openPaymentForm = (hospitalId?: string) => {
     setPayHospital(hospitalId || '');
@@ -339,31 +331,62 @@ export default function Revenue() {
         </select>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="bg-white rounded-xl border border-slate-200 p-5">
-          <div className="w-10 h-10 bg-slate-100 rounded-lg flex items-center justify-center mb-3">
-            <IndianRupee className="w-5 h-5 text-slate-600" />
+      {/* Summary — monthly tally: pending and excess kept separate */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="card p-5">
+          <div className="w-10 h-10 bg-rose-100 rounded-xl flex items-center justify-center mb-3">
+            <Calendar className="w-5 h-5 text-rose-600" />
           </div>
-          <p className="text-2xl font-bold text-slate-800">{formatCurrency(totalFees)}</p>
-          <p className="text-sm text-slate-400">Total Fees Billed</p>
+          <p className={`text-2xl font-bold tabular-nums ${totals.pending > 0 ? 'text-rose-600' : 'text-slate-400'}`}>{formatCurrency(totals.pending)}</p>
+          <p className="text-sm text-slate-500">Pending</p>
+          <p className="text-xs text-slate-400 mt-1">Sum of each month's unpaid balance</p>
         </div>
-        <div className="bg-white rounded-xl border border-slate-200 p-5">
-          <div className="w-10 h-10 bg-emerald-50 rounded-lg flex items-center justify-center mb-3">
+        <div className="card p-5">
+          <div className="w-10 h-10 bg-emerald-100 rounded-xl flex items-center justify-center mb-3">
             <TrendingUp className="w-5 h-5 text-emerald-600" />
           </div>
-          <p className="text-2xl font-bold text-emerald-600">{formatCurrency(totalReceived)}</p>
-          <p className="text-sm text-slate-400">Total Received</p>
+          <p className={`text-2xl font-bold tabular-nums ${totals.excess > 0 ? 'text-emerald-700' : 'text-slate-400'}`}>{formatCurrency(totals.excess)}</p>
+          <p className="text-sm text-slate-500">Excess paid</p>
+          <p className="text-xs text-slate-400 mt-1">Sum of each month's overpayment</p>
         </div>
-        <div className="bg-white rounded-xl border border-slate-200 p-5">
-          <div className="w-10 h-10 bg-red-50 rounded-lg flex items-center justify-center mb-3">
-            <Calendar className="w-5 h-5 text-red-600" />
+      </div>
+
+      {/* Monthly tally */}
+      <div className="card p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <IndianRupee className="w-4 h-4 text-slate-500" />
+          <h2 className="font-semibold text-slate-700">Monthly Tally</h2>
+        </div>
+        {filteredTally.length === 0 ? (
+          <p className="text-sm text-slate-400 py-4 text-center">No fees recorded for the selected filters.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-100 text-left text-xs text-slate-500 uppercase tracking-wide">
+                  <th className="px-3 py-2 font-medium">Month</th>
+                  <th className="px-3 py-2 font-medium">Hospital</th>
+                  <th className="px-3 py-2 font-medium text-right">Billed</th>
+                  <th className="px-3 py-2 font-medium text-right">Received</th>
+                  <th className="px-3 py-2 font-medium text-right">Pending</th>
+                  <th className="px-3 py-2 font-medium text-right">Excess</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredTally.map((t) => (
+                  <tr key={`-`} className="border-b border-slate-50">
+                    <td className="px-3 py-2.5 font-medium text-slate-700 whitespace-nowrap">{formatMonth(t.month)}</td>
+                    <td className="px-3 py-2.5 text-slate-500">{hospitalName(t.hospitalId)}</td>
+                    <td className="px-3 py-2.5 text-right text-slate-600 tabular-nums">{formatCurrency(t.generated)}</td>
+                    <td className="px-3 py-2.5 text-right text-slate-600 tabular-nums">{formatCurrency(t.received)}</td>
+                    <td className={`px-3 py-2.5 text-right font-semibold tabular-nums ${t.pending > 0 ? 'text-rose-600' : 'text-slate-300'}`}>{t.pending > 0 ? formatCurrency(t.pending) : '—'}</td>
+                    <td className={`px-3 py-2.5 text-right font-semibold tabular-nums ${t.excess > 0 ? 'text-emerald-700' : 'text-slate-300'}`}>{t.excess > 0 ? formatCurrency(t.excess) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-          <p className={`text-2xl font-bold ${totalPending > 0 ? 'text-red-600' : 'text-slate-500'}`}>
-            {formatCurrency(totalPending)}
-          </p>
-          <p className="text-sm text-slate-400">Total Pending</p>
-        </div>
+        )}
       </div>
 
       {/* Hospital Breakdown */}
@@ -405,8 +428,11 @@ export default function Revenue() {
                       style={{ width: `${pct}%` }}
                     />
                   </div>
-                  {hr.pending > 0 && (
-                    <p className="text-xs text-red-500 mt-1.5">Pending: {formatCurrency(hr.pending)}</p>
+                  {(hr.pending > 0 || hr.excess > 0) && (
+                    <p className="text-xs mt-1.5 flex gap-3">
+                      {hr.pending > 0 && <span className="text-rose-600 font-medium">Pending: {formatCurrency(hr.pending)}</span>}
+                      {hr.excess > 0 && <span className="text-emerald-700 font-medium">Excess paid: {formatCurrency(hr.excess)}</span>}
+                    </p>
                   )}
                 </div>
               );

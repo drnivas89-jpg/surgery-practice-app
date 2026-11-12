@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Attendance, MonthlyEntry } from '@/lib/types';
 import { formatDate } from '@/lib/helpers';
-import { getColSummary } from '@/lib/col';
+import { getColSummary, redeemableOn } from '@/lib/col';
+import { ColContext } from '@/lib/holidays';
 import { AttendanceChoiceState, attendanceToChoiceState, validateAttendanceChoice, buildAttendanceFields } from '@/lib/attendance';
 import AttendanceStatusPicker from './AttendanceStatusPicker';
 import { X } from 'lucide-react';
@@ -14,6 +15,7 @@ interface Props {
   existingEntry: MonthlyEntry | null;
   existingAttendance: Attendance | null;
   attendance: Attendance[];
+  colContext: ColContext;
   userId: string;
   onClose: () => void;
   onSaved: () => void;
@@ -23,7 +25,7 @@ interface Props {
 // Hospitals page and Reports page date-wise drill-down tables (and
 // previously the Dashboard's, before that view was simplified). Upserts
 // both monthly_entries and attendance for the date in one save.
-export default function EditDayModal({ hospitalId, hospitalName, date, existingEntry, existingAttendance, attendance, userId, onClose, onSaved }: Props) {
+export default function EditDayModal({ hospitalId, hospitalName, date, existingEntry, existingAttendance, attendance, colContext, userId, onClose, onSaved }: Props) {
   const [op, setOp] = useState(existingEntry?.op_patients?.toString() || '');
   const [opinion, setOpinion] = useState(existingEntry?.opinion_patients?.toString() || '');
   const [feesGen, setFeesGen] = useState(existingEntry?.fees_generated?.toString() || '');
@@ -33,7 +35,8 @@ export default function EditDayModal({ hospitalId, hospitalName, date, existingE
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const colSummary = useMemo(() => getColSummary(attendance, hospitalId), [attendance, hospitalId]);
+  const colSummary = useMemo(() => getColSummary(attendance, hospitalId, { context: colContext, asOf: date }), [attendance, hospitalId, colContext, date]);
+  const holidayName = colContext.governmentHospitalIds.has(hospitalId) ? colContext.holidayNameOn(date) : null;
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -75,8 +78,8 @@ export default function EditDayModal({ hospitalId, hospitalName, date, existingE
   };
 
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-[2px] flex items-end sm:items-center justify-center z-50 sm:p-4" onClick={onClose}>
+      <div className="bg-white rounded-t-3xl sm:rounded-2xl p-6 w-full sm:max-w-md shadow-2xl max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="text-lg font-semibold text-slate-800">Edit {formatDate(date)}</h2>
@@ -111,7 +114,7 @@ export default function EditDayModal({ hospitalId, hospitalName, date, existingE
               <span className="text-sm font-medium text-slate-600">Record attendance for this date</span>
             </label>
             {recordAttendance && (
-              <AttendanceStatusPicker value={attState} onChange={setAttState} colAvailableDates={colSummary.availableDates} size="compact" />
+              <AttendanceStatusPicker value={attState} onChange={setAttState} colAvailableDates={redeemableOn(colSummary, date)} holidayName={holidayName} size="compact" />
             )}
           </div>
 

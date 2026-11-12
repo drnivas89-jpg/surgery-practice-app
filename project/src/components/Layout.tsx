@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useState } from 'react';
 import { useAuth } from '@/lib/auth';
-import { LayoutDashboard, Users, Building2, DollarSign, LogOut, Stethoscope, FileBarChart, FileText, ClipboardList, Zap, Share2, KeyRound, X, CheckCircle2, AlertCircle, BookOpen, ChevronsLeft, ChevronsRight } from 'lucide-react';
+import { LayoutDashboard, Users, Building2, DollarSign, LogOut, Stethoscope, FileBarChart, FileText, ClipboardList, Zap, Share2, KeyRound, X, CheckCircle2, AlertCircle, BookOpen, ChevronsLeft, ChevronsRight, Menu } from 'lucide-react';
 
 export type View = 'dashboard' | 'patients' | 'hospitals' | 'revenue' | 'reports' | 'consent' | 'logbook' | 'col' | 'sharing' | 'publications';
 
@@ -143,125 +143,166 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
 // without needing the full expanded width.
 function CollapsedTooltip({ label }: { label: string }) {
   return (
-    <span className="pointer-events-none absolute left-full ml-2 top-1/2 -translate-y-1/2 whitespace-nowrap rounded-md bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-white opacity-0 shadow-lg transition group-hover:opacity-100 group-focus-visible:opacity-100 z-50">
-    {label}
-  </span>
+    <span className="pointer-events-none absolute left-full ml-3 top-1/2 -translate-y-1/2 whitespace-nowrap rounded-md bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-white opacity-0 shadow-lg transition group-hover:opacity-100 group-focus-visible:opacity-100 z-50">
+      {label}
+    </span>
   );
 }
+
+const ALL_ITEMS = navSections.flatMap((s) => s.items);
 
 export default function Layout({ current, onNavigate, children }: LayoutProps) {
   const { user, signOut } = useAuth();
   const [showChangePassword, setShowChangePassword] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(() => {
     if (typeof window === 'undefined') return false;
-    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1';
+    try { return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'; } catch { return false; }
   });
 
   useEffect(() => {
-    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0');
+    try { localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch { /* storage unavailable */ }
   }, [collapsed]);
 
-  const sidebarWidth = collapsed ? 'w-[68px]' : 'w-60';
+  // The mobile drawer never shows the collapsed (icons-only) variant.
+  const iconsOnly = collapsed && !mobileOpen;
+  const navigate = (view: View) => { onNavigate(view); setMobileOpen(false); };
+  const currentLabel = ALL_ITEMS.find((i) => i.id === current)?.label || '';
+  const initial = (user?.email || '?').charAt(0).toUpperCase();
+
+  const sidebar = (
+    <div className="flex h-full flex-col bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950 text-slate-300">
+      <div className={`flex items-center border-b border-white/5 ${iconsOnly ? 'justify-center p-3' : 'gap-3 px-5 py-5'}`}>
+        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-sky-400 to-teal-500 flex items-center justify-center flex-shrink-0 shadow-lg shadow-sky-900/40">
+          <Stethoscope className="w-5 h-5 text-white" />
+        </div>
+        {!iconsOnly && (
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-bold text-white leading-tight truncate">Surgery Practice</p>
+            <p className="text-[11px] text-slate-400 truncate">Management Suite</p>
+          </div>
+        )}
+        {mobileOpen && (
+          <button onClick={() => setMobileOpen(false)} className="lg:hidden p-1.5 rounded-lg text-slate-400 hover:bg-white/10" aria-label="Close menu">
+            <X className="w-5 h-5" />
+          </button>
+        )}
+      </div>
+
+      <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto overflow-x-hidden">
+        {navSections.map((section) => (
+          <div key={section.title}>
+            {!iconsOnly && (
+              <p className="px-3 mb-1.5 text-[10px] font-semibold text-slate-500 uppercase tracking-wider">{section.title}</p>
+            )}
+            <div className="space-y-0.5">
+              {section.items.map((item) => {
+                const Icon = item.icon;
+                const active = current === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => navigate(item.id)}
+                    aria-label={item.label}
+                    aria-current={active ? 'page' : undefined}
+                    className={`group relative w-full flex items-center rounded-xl text-sm font-medium transition ${
+                      iconsOnly ? 'justify-center px-0 py-2.5' : 'gap-3 px-3 py-2.5'
+                    } ${
+                      active
+                        ? 'bg-gradient-to-r from-sky-500/20 to-teal-500/10 text-white ring-1 ring-inset ring-sky-400/20'
+                        : 'text-slate-400 hover:bg-white/5 hover:text-white'
+                    }`}
+                  >
+                    <Icon className={`w-[18px] h-[18px] flex-shrink-0 ${active ? 'text-sky-300' : ''}`} />
+                    {!iconsOnly && <span className="truncate">{item.label}</span>}
+                    {iconsOnly && <CollapsedTooltip label={item.label} />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </nav>
+
+      <div className={`border-t border-white/5 ${iconsOnly ? 'p-2' : 'p-3'} space-y-0.5`}>
+        {!iconsOnly && (
+          <div className="flex items-center gap-2.5 px-2 py-2 mb-1 rounded-xl bg-white/5">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-sky-400 to-violet-500 flex items-center justify-center text-sm font-bold text-white flex-shrink-0">{initial}</div>
+            <p className="text-xs text-slate-300 truncate">{user?.email}</p>
+          </div>
+        )}
+        <button
+          onClick={() => setCollapsed((c) => !c)}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          className={`hidden lg:flex group relative w-full items-center rounded-xl text-sm font-medium text-slate-400 hover:bg-white/5 hover:text-white transition ${
+            iconsOnly ? 'justify-center px-0 py-2.5' : 'gap-3 px-3 py-2.5'
+          }`}
+        >
+          {collapsed ? <ChevronsRight className="w-4 h-4 flex-shrink-0" /> : <ChevronsLeft className="w-4 h-4 flex-shrink-0" />}
+          {!iconsOnly && <span>Collapse</span>}
+          {iconsOnly && <CollapsedTooltip label="Expand sidebar" />}
+        </button>
+        <button
+          onClick={() => setShowChangePassword(true)}
+          aria-label="Change Password"
+          className={`group relative w-full flex items-center rounded-xl text-sm font-medium text-slate-400 hover:bg-white/5 hover:text-white transition ${
+            iconsOnly ? 'justify-center px-0 py-2.5' : 'gap-3 px-3 py-2.5'
+          }`}
+        >
+          <KeyRound className="w-4 h-4 flex-shrink-0" />
+          {!iconsOnly && 'Change Password'}
+          {iconsOnly && <CollapsedTooltip label="Change Password" />}
+        </button>
+        <button
+          onClick={signOut}
+          aria-label="Sign Out"
+          className={`group relative w-full flex items-center rounded-xl text-sm font-medium text-slate-400 hover:bg-red-500/10 hover:text-red-300 transition ${
+            iconsOnly ? 'justify-center px-0 py-2.5' : 'gap-3 px-3 py-2.5'
+          }`}
+        >
+          <LogOut className="w-4 h-4 flex-shrink-0" />
+          {!iconsOnly && 'Sign Out'}
+          {iconsOnly && <CollapsedTooltip label="Sign Out" />}
+        </button>
+      </div>
+    </div>
+  );
 
   return (
-    <div className="min-h-screen bg-slate-50 flex">
-      <aside className={`${sidebarWidth} bg-white border-r border-slate-200 flex flex-col fixed h-screen transition-[width] duration-300 ease-in-out z-40`}>
-        <div className={`border-b border-slate-100 ${collapsed ? 'p-3' : 'p-5'}`}>
-          <div className={`flex items-center ${collapsed ? 'justify-center' : 'gap-2.5'}`}>
-            <div className="w-9 h-9 bg-sky-600 rounded-lg flex items-center justify-center flex-shrink-0">
-              <Stethoscope className="w-5 h-5 text-white" />
-            </div>
-            {!collapsed && (
-              <div className="min-w-0">
-                <p className="text-sm font-semibold text-slate-800 leading-tight truncate">Surgery Practice</p>
-                <p className="text-xs text-slate-400 truncate">Management Suite</p>
-              </div>
-            )}
-          </div>
-        </div>
-
-        <nav className="flex-1 p-3 space-y-4 overflow-y-auto overflow-x-hidden">
-          {navSections.map((section) => (
-            <div key={section.title}>
-              {!collapsed && (
-                <p className="px-3 mb-1 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">{section.title}</p>
-              )}
-              <div className="space-y-1">
-                {section.items.map((item) => {
-                  const Icon = item.icon;
-                  const active = current === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => onNavigate(item.id)}
-                      aria-label={item.label}
-                      className={`group relative w-full flex items-center rounded-lg text-sm font-medium transition ${
-                        collapsed ? 'justify-center px-0 py-2.5' : 'gap-3 px-3 py-2.5'
-                      } ${
-                        active
-                          ? 'bg-sky-50 text-sky-700'
-                          : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
-                      }`}
-                    >
-                      {active && (
-                        <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-1 rounded-r-full bg-sky-600" />
-                      )}
-                      <Icon className="w-4 h-4 flex-shrink-0" />
-                      {!collapsed && <span className="truncate">{item.label}</span>}
-                      {collapsed && <CollapsedTooltip label={item.label} />}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </nav>
-
-        <div className={`border-t border-slate-100 ${collapsed ? 'p-2' : 'p-3'}`}>
-          <button
-            onClick={() => setCollapsed((c) => !c)}
-            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            className={`group relative w-full flex items-center rounded-lg text-sm font-medium text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition mb-1 ${
-              collapsed ? 'justify-center px-0 py-2.5' : 'gap-3 px-3 py-2.5'
-            }`}
-          >
-            {collapsed ? <ChevronsRight className="w-4 h-4 flex-shrink-0" /> : <ChevronsLeft className="w-4 h-4 flex-shrink-0" />}
-            {!collapsed && <span>Collapse</span>}
-            {collapsed && <CollapsedTooltip label="Expand sidebar" />}
-          </button>
-
-          {!collapsed && (
-            <div className="px-3 py-2 mb-1">
-              <p className="text-xs text-slate-400 truncate">{user?.email}</p>
-            </div>
-          )}
-          <button
-            onClick={() => setShowChangePassword(true)}
-            aria-label="Change Password"
-            className={`group relative w-full flex items-center rounded-lg text-sm font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition ${
-              collapsed ? 'justify-center px-0 py-2.5' : 'gap-3 px-3 py-2.5'
-            }`}
-          >
-            <KeyRound className="w-4 h-4 flex-shrink-0" />
-            {!collapsed && 'Change Password'}
-            {collapsed && <CollapsedTooltip label="Change Password" />}
-          </button>
-          <button
-            onClick={signOut}
-            aria-label="Sign Out"
-            className={`group relative w-full flex items-center rounded-lg text-sm font-medium text-slate-500 hover:bg-red-50 hover:text-red-600 transition ${
-              collapsed ? 'justify-center px-0 py-2.5' : 'gap-3 px-3 py-2.5'
-            }`}
-          >
-            <LogOut className="w-4 h-4 flex-shrink-0" />
-            {!collapsed && 'Sign Out'}
-            {collapsed && <CollapsedTooltip label="Sign Out" />}
-          </button>
-        </div>
+    <div className="min-h-screen">
+      {/* Desktop sidebar */}
+      <aside className={`hidden lg:block fixed inset-y-0 left-0 z-40 transition-[width] duration-300 ease-in-out ${collapsed ? 'w-[76px]' : 'w-64'}`}>
+        {sidebar}
       </aside>
 
-      <div className={`flex-1 transition-[margin] duration-300 ease-in-out ${collapsed ? 'ml-[68px]' : 'ml-60'}`}>
-        <main className="p-6 max-w-7xl mx-auto">{children}</main>
+      {/* Mobile drawer */}
+      {mobileOpen && (
+        <div className="lg:hidden fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-slate-950/50 backdrop-blur-sm" onClick={() => setMobileOpen(false)} />
+          <aside className="absolute inset-y-0 left-0 w-72 max-w-[85vw] shadow-2xl" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
+            {sidebar}
+          </aside>
+        </div>
+      )}
+
+      {/* Mobile top bar */}
+      <header
+        className="lg:hidden sticky top-0 z-30 flex items-center gap-3 bg-slate-900 px-4 py-3 text-white shadow-md"
+        style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.75rem)' }}
+      >
+        <button onClick={() => setMobileOpen(true)} className="p-1.5 -ml-1.5 rounded-lg hover:bg-white/10" aria-label="Open menu">
+          <Menu className="w-5 h-5" />
+        </button>
+        <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-sky-400 to-teal-500 flex items-center justify-center">
+          <Stethoscope className="w-4 h-4 text-white" />
+        </div>
+        <p className="font-semibold truncate">{currentLabel}</p>
+      </header>
+
+      <div className={`transition-[margin] duration-300 ease-in-out ${collapsed ? 'lg:ml-[76px]' : 'lg:ml-64'}`}>
+        <main className="px-4 py-5 sm:px-6 sm:py-7 max-w-7xl mx-auto" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 1.5rem)' }}>
+          {children}
+        </main>
       </div>
 
       {showChangePassword && <ChangePasswordModal onClose={() => setShowChangePassword(false)} />}

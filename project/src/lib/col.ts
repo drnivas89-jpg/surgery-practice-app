@@ -1,4 +1,10 @@
 import { Attendance } from './types';
+import { ColContext, EMPTY_COL_CONTEXT } from './holidays';
+import { todayLocalDateStr } from './helpers';
+
+export const COL_VALIDITY_MONTHS = 6;
+
+export type ColCreditSource = 'col_duty' | 'holiday';
 
 export interface ColCreditDate {
   date: string;
@@ -6,6 +12,11 @@ export interface ColCreditDate {
   hospitalName: string;
   attendanceId: string;
   reason: string | null;
+  // Last date the credit can be redeemed on (inclusive).
+  expiryDate: string;
+  // 'col_duty' = marked Duty -> COL by hand; 'holiday' = any duty worked
+  // at a government hospital on a government holiday.
+  source: ColCreditSource;
 }
 
 export interface ColUsageEntry {
@@ -21,45 +32,68 @@ export interface ColSummary {
   accrued: number;
   redeemed: number;
   available: number;
-  expired: number;
+  wasted: number;
   creditDates: ColCreditDate[];
   availableDates: ColCreditDate[];
-  expiredDates: ColCreditDate[];
+  wastedDates: ColCreditDate[];
   usage: ColUsageEntry[];
 }
 
+export interface ColSummaryOptions {
+  context?: ColContext;
+  // Availability/wastage is judged as of this date (yyyy-mm-dd) — today by
+  // default; attendance forms pass the date being entered.
+  asOf?: string;
+}
+
+// Credit date + 6 months, minus one day (a credit earned 15 Jan is usable
+// up to and including 14 Jul). Day overflow is clamped to month end.
+export function colExpiryDate(date: string): string {
+  const [y, m, d] = date.substring(0, 10).split('-').map(Number);
+  const targetMonthIndex = m - 1 + COL_VALIDITY_MONTHS;
+  const lastDay = new Date(y, targetMonthIndex + 1, 0).getDate();
+  const expiry = new Date(y, targetMonthIndex, Math.min(d, lastDay));
+  expiry.setDate(expiry.getDate() - 1);
+  return todayLocalDateStr(expiry);
+}
+
+// A row earns a COL credit when it's Duty -> COL, or when it's any kind of
+// duty (not leave) at a government hospital on a government holiday.
+function creditFor(a: Attendance, context: ColContext): { source: ColCreditSource; reason: string | null } | null {
+  if (a.status === 'leave') return null;
+  if (a.status === 'extra_duty' && (a.extra_duty_type || '').toLowerCase() === 'col') {
+    return { source: 'col_duty', reason: a.col_reason || context.holidayNameOn(a.attendance_date) };
+  }
+  if (context.governmentHospitalIds.has(a.hospital_id)) {
+    const holiday = context.holidayNameOn(a.attendance_date);
+    if (holiday) return { source: 'holiday', reason: a.col_reason || holiday };
+  }
+  return null;
+}
+
 // Single source of truth for COL (Compensatory Off) accounting, shared by
-// Dashboard, COLDashboard and the Attendance form so they can never disagree.
+// Dashboard, COLDashboard, Reports and every attendance form so they can
+// never disagree.
 //
-// A COL credit is earned by a `status='extra_duty'` row with
-// `extra_duty_type='col'`. It's redeemed by a `status='leave'` row.
 // COL is strictly hospital-scoped: a credit earned at hospital A can only
 // ever be matched against a leave taken at that same hospital A — matching
-// is keyed on (hospital_id, date), not date alone (two different hospitals
-// can otherwise coincidentally share a calendar date).
+// is keyed on (hospital_id, date).
 //
-// Redemption prefers the explicit `compensated_working_date` link (set by
-// the Attendance form going forward); leave rows recorded before that
-// column existed have no link, so they fall back to the app's original
-// greedy date-order pairing (also now hospital-scoped) so historical data
-// keeps displaying sensibly.
+// Redemption prefers the explicit `compensated_working_date` link; COL
+// leave rows recorded before that column existed fall back to greedy
+// date-order pairing so historical data keeps displaying sensibly.
 //
-// Pass `hospitalId` to get the summary for just one hospital (e.g. to
-// populate a "compensates COL credit" picker that must not leak other
-// hospitals' credits).
-//
-// Expiry: a COL credit is only usable within the calendar year it was
-// earned in. Once the calendar has moved past that year, an unused credit
-// is 'expired' rather than 'available' — it drops out of availableDates
-// (so it can no longer be redeemed) and shows up in expiredDates instead.
-// `currentYear` defaults to the real current year; pass it explicitly for
-// deterministic tests.
-export function getColSummary(attendance: Attendance[], hospitalId?: string, currentYear: number = new Date().getFullYear()): ColSummary {
+// Validity: a credit is usable for 6 months (see colExpiryDate). An unused
+// credit past its expiry is 'wasted'.
+export function getColSummary(attendance: Attendance[], hospitalId?: string, options: ColSummaryOptions = {}): ColSummary {
+  const context = options.context || EMPTY_COL_CONTEXT;
+  const asOf = options.asOf || todayLocalDateStr();
   const scoped = hospitalId ? attendance.filter((a) => a.hospital_id === hospitalId) : attendance;
 
   const colEntries = scoped
-    .filter((a) => a.status === 'extra_duty' && (a.extra_duty_type || '').toLowerCase() === 'col')
-    .sort((a, b) => a.attendance_date.localeCompare(b.attendance_date));
+    .map((a) => ({ row: a, credit: creditFor(a, context) }))
+    .filter((e): e is { row: Attendance; credit: NonNullable<ReturnType<typeof creditFor>> } => !!e.credit)
+    .sort((a, b) => a.row.attendance_date.localeCompare(b.row.attendance_date));
 
   const leaveEntries = scoped
     .filter((a) => a.status === 'leave')
@@ -70,46 +104,40 @@ export function getColSummary(attendance: Attendance[], hospitalId?: string, cur
   const usage: ColUsageEntry[] = [];
   const claimed = new Set<string>();
 
-  // Pass 1: explicit, persisted links (still hospital-scoped — a link
-  // pointing at a different hospital's date, e.g. from stale data, is
-  // simply not honoured).
+  // Pass 1: explicit, persisted links (hospital-scoped).
   for (const leave of leaveEntries) {
     if (!leave.compensated_working_date) continue;
     const col = colEntries.find(
-      (c) => c.attendance_date === leave.compensated_working_date && c.hospital_id === leave.hospital_id
+      (c) => c.row.attendance_date === leave.compensated_working_date && c.row.hospital_id === leave.hospital_id
     );
-    if (!col || claimed.has(claimKey(col.hospital_id, col.attendance_date))) continue;
-    claimed.add(claimKey(col.hospital_id, col.attendance_date));
+    if (!col || claimed.has(claimKey(col.row.hospital_id, col.row.attendance_date))) continue;
+    claimed.add(claimKey(col.row.hospital_id, col.row.attendance_date));
     usage.push({
       leaveAttendanceId: leave.id,
       leaveDate: leave.attendance_date,
-      compensatedWorkingDate: col.attendance_date,
+      compensatedWorkingDate: col.row.attendance_date,
       hospitalId: leave.hospital_id,
       hospitalName: leave.hospital?.name || '—',
       inferred: false,
     });
   }
 
-  // Pass 2: legacy fallback, ONLY for leave rows that are actually typed
-  // as COL but predate the compensated_working_date column (so they have
-  // no explicit link to fall back on). Must not match Casual/Medical/Week
-  // Off/PDO/etc. leaves — those aren't COL redemptions at all, and
-  // matching them here was silently "using up" the next available credit
-  // against completely unrelated leave. Still hospital-scoped.
+  // Pass 2: legacy fallback, only for leave rows typed as COL that predate
+  // the explicit link. Never matches Casual/Medical/etc. leave.
   for (const leave of leaveEntries) {
     if (leave.compensated_working_date) continue;
     if ((leave.leave_type || '').toLowerCase() !== 'col') continue;
     const colBefore = colEntries.filter(
-      (c) => c.hospital_id === leave.hospital_id && c.attendance_date <= leave.attendance_date
+      (c) => c.row.hospital_id === leave.hospital_id && c.row.attendance_date <= leave.attendance_date
     );
     for (const c of colBefore) {
-      const key = claimKey(c.hospital_id, c.attendance_date);
+      const key = claimKey(c.row.hospital_id, c.row.attendance_date);
       if (!claimed.has(key)) {
         claimed.add(key);
         usage.push({
           leaveAttendanceId: leave.id,
           leaveDate: leave.attendance_date,
-          compensatedWorkingDate: c.attendance_date,
+          compensatedWorkingDate: c.row.attendance_date,
           hospitalId: leave.hospital_id,
           hospitalName: leave.hospital?.name || '—',
           inferred: true,
@@ -119,67 +147,71 @@ export function getColSummary(attendance: Attendance[], hospitalId?: string, cur
     }
   }
 
-  const creditDates: ColCreditDate[] = colEntries.map((c) => ({
-    date: c.attendance_date,
-    hospitalId: c.hospital_id,
-    hospitalName: c.hospital?.name || '—',
-    attendanceId: c.id,
-    reason: c.col_reason,
+  const creditDates: ColCreditDate[] = colEntries.map(({ row, credit }) => ({
+    date: row.attendance_date,
+    hospitalId: row.hospital_id,
+    hospitalName: row.hospital?.name || '—',
+    attendanceId: row.id,
+    reason: credit.reason,
+    expiryDate: colExpiryDate(row.attendance_date),
+    source: credit.source,
   }));
   const unclaimed = creditDates.filter((c) => !claimed.has(claimKey(c.hospitalId, c.date)));
-  const isExpired = (date: string) => Number(date.substring(0, 4)) < currentYear;
-  const availableDates = unclaimed.filter((c) => !isExpired(c.date));
-  const expiredDates = unclaimed.filter((c) => isExpired(c.date));
+  const availableDates = unclaimed.filter((c) => asOf <= c.expiryDate);
+  const wastedDates = unclaimed.filter((c) => asOf > c.expiryDate);
 
   return {
     accrued: colEntries.length,
     redeemed: claimed.size,
     available: availableDates.length,
-    expired: expiredDates.length,
+    wasted: wastedDates.length,
     creditDates,
     availableDates,
-    expiredDates,
+    wastedDates,
     usage: usage.sort((a, b) => a.leaveDate.localeCompare(b.leaveDate)),
   };
 }
 
-export type ColCreditStatus = 'available' | 'used' | 'expired';
+// Credits a leave on `leaveDate` may redeem: available as of that date and
+// already earned by then.
+export function redeemableOn(summary: ColSummary, leaveDate: string): ColCreditDate[] {
+  return summary.availableDates.filter((c) => c.date <= leaveDate);
+}
+
+export type ColCreditStatus = 'available' | 'used' | 'wasted';
 
 export interface ColYearBucket {
   year: number;
   creditedCount: number;
   usedCount: number;
-  expiredCount: number;
+  wastedCount: number;
   creditDates: (ColCreditDate & { status: ColCreditStatus })[];
 }
 
+export function creditStatus(summary: ColSummary, credit: ColCreditDate): ColCreditStatus {
+  if (summary.availableDates.some((d) => d.attendanceId === credit.attendanceId)) return 'available';
+  if (summary.wastedDates.some((d) => d.attendanceId === credit.attendanceId)) return 'wasted';
+  return 'used';
+}
+
 // Pure reshaping of an already-computed ColSummary into year-grouped
-// buckets for the COL Dashboard's hospital-wise, per-year drill-down. Does
-// NOT recompute or re-match anything — grouping only — so results can
-// never disagree with getColSummary's own accrued/redeemed/available.
+// buckets — grouping only, so it can never disagree with getColSummary.
 export function groupColByYear(summary: ColSummary): ColYearBucket[] {
-  const availableIds = new Set(summary.availableDates.map((d) => d.attendanceId));
-  const expiredIds = new Set(summary.expiredDates.map((d) => d.attendanceId));
   const byYear = new Map<number, ColYearBucket>();
   const ensure = (year: number) => {
     let bucket = byYear.get(year);
     if (!bucket) {
-      bucket = { year, creditedCount: 0, usedCount: 0, expiredCount: 0, creditDates: [] };
+      bucket = { year, creditedCount: 0, usedCount: 0, wastedCount: 0, creditDates: [] };
       byYear.set(year, bucket);
     }
     return bucket;
   };
 
   summary.creditDates.forEach((c) => {
-    const year = Number(c.date.substring(0, 4));
-    const bucket = ensure(year);
+    const bucket = ensure(Number(c.date.substring(0, 4)));
     bucket.creditedCount++;
-    const status: ColCreditStatus = availableIds.has(c.attendanceId)
-      ? 'available'
-      : expiredIds.has(c.attendanceId)
-      ? 'expired'
-      : 'used';
-    if (status === 'expired') bucket.expiredCount++;
+    const status = creditStatus(summary, c);
+    if (status === 'wasted') bucket.wastedCount++;
     bucket.creditDates.push({ ...c, status });
   });
   summary.usage.forEach((u) => {

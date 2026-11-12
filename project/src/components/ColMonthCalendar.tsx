@@ -2,14 +2,16 @@ import { useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Attendance } from '@/lib/types';
 import { formatDate } from '@/lib/helpers';
-import { getColSummary } from '@/lib/col';
-import { buildAttendanceFields } from '@/lib/attendance';
+import { getColSummary, redeemableOn } from '@/lib/col';
+import { ColContext } from '@/lib/holidays';
+import { buildAttendanceFields, defaultAttendanceChoiceState, dutyKindOf } from '@/lib/attendance';
 import { ChevronLeft, ChevronRight, X, Zap, LogOut } from 'lucide-react';
 
 interface Props {
   hospitalId: string;
   hospitalName: string;
   attendance: Attendance[];
+  colContext: ColContext;
   userId: string;
   initialMonth?: number;
   initialYear?: number;
@@ -28,7 +30,7 @@ const WEEKDAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 // (a leave redeeming an earlier credit at this hospital). Both paths go
 // through buildAttendanceFields — the same mapping every other attendance
 // entry point uses — so numbers can never diverge across the app.
-export default function ColMonthCalendar({ hospitalId, hospitalName, attendance, userId, initialMonth, initialYear, onClose, onSaved }: Props) {
+export default function ColMonthCalendar({ hospitalId, hospitalName, attendance, colContext, userId, initialMonth, initialYear, onClose, onSaved }: Props) {
   const now = new Date();
   const [month, setMonth] = useState(initialMonth ?? now.getMonth());
   const [year, setYear] = useState(initialYear ?? now.getFullYear());
@@ -39,7 +41,12 @@ export default function ColMonthCalendar({ hospitalId, hospitalName, attendance,
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const colSummary = useMemo(() => getColSummary(attendance, hospitalId), [attendance, hospitalId]);
+  const colSummary = useMemo(
+    () => getColSummary(attendance, hospitalId, { context: colContext, asOf: pickedDate || undefined }),
+    [attendance, hospitalId, colContext, pickedDate]
+  );
+  const isGovernment = colContext.governmentHospitalIds.has(hospitalId);
+  const creditDates = useMemo(() => new Set(colSummary.creditDates.map((c) => c.date)), [colSummary]);
   const attendanceByDate = useMemo(() => {
     const map = new Map<string, Attendance>();
     attendance.filter((a) => a.hospital_id === hospitalId).forEach((a) => map.set(a.attendance_date, a));
@@ -59,7 +66,7 @@ export default function ColMonthCalendar({ hospitalId, hospitalName, attendance,
   const dotClassFor = (date: string) => {
     const a = attendanceByDate.get(date);
     if (!a) return null;
-    if (a.status === 'extra_duty' && (a.extra_duty_type || '').toLowerCase() === 'col') return 'bg-amber-500';
+    if (creditDates.has(date) || dutyKindOf(a) === 'col') return 'bg-amber-500';
     if (a.status === 'leave' && a.compensated_working_date) return 'bg-red-500';
     return 'bg-slate-300';
   };
@@ -86,8 +93,8 @@ export default function ColMonthCalendar({ hospitalId, hospitalName, attendance,
     }
 
     const fields = kind === 'credit'
-      ? buildAttendanceFields({ choice: 'extra_duty', extraDutyKind: 'col', extraDutyOthersText: '', dutySubtype: '', colReason: creditReason, leaveType: '', compensatedWorkingDate: '' })
-      : buildAttendanceFields({ choice: 'leave', leaveType: 'col', compensatedWorkingDate: redeemChoice, extraDutyKind: 'col', extraDutyOthersText: '', dutySubtype: '', colReason: '' });
+      ? buildAttendanceFields({ ...defaultAttendanceChoiceState(), choice: 'duty', dutyKind: 'col', colReason: creditReason })
+      : buildAttendanceFields({ ...defaultAttendanceChoiceState(), choice: 'leave', leaveType: 'col', compensatedWorkingDate: redeemChoice });
 
     const payload = { user_id: userId, hospital_id: hospitalId, attendance_date: pickedDate, ...fields, notes: '' };
     const { error: saveError } = await supabase.from('attendance').upsert(payload, { onConflict: 'user_id,hospital_id,attendance_date' });
@@ -124,14 +131,16 @@ export default function ColMonthCalendar({ hospitalId, hospitalName, attendance,
           {cells.map((date, i) => {
             if (!date) return <div key={i} />;
             const dot = dotClassFor(date);
+            const holiday = isGovernment ? colContext.holidayNameOn(date) : null;
             return (
               <button
                 key={date}
                 type="button"
                 onClick={() => openPicker(date)}
                 className={`aspect-square rounded-lg text-xs flex flex-col items-center justify-center gap-0.5 transition hover:bg-sky-50 ${
-                  pickedDate === date ? 'bg-sky-100 ring-2 ring-sky-400' : 'bg-slate-50'
+                  pickedDate === date ? 'bg-sky-100 ring-2 ring-sky-400' : holiday ? 'bg-amber-50 ring-1 ring-amber-200' : 'bg-slate-50'
                 }`}
+                title={holiday || undefined}
               >
                 <span className="text-slate-600">{Number(date.substring(8, 10))}</span>
                 {dot && <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />}
@@ -143,6 +152,7 @@ export default function ColMonthCalendar({ hospitalId, hospitalName, attendance,
         <div className="flex items-center gap-3 text-[11px] text-slate-400 mb-4">
           <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500" /> Credit</span>
           <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500" /> Utilised</span>
+          {isGovernment && <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-amber-50 ring-1 ring-amber-200" /> Govt holiday</span>}
         </div>
 
         {pickedDate && (
@@ -191,7 +201,7 @@ export default function ColMonthCalendar({ hospitalId, hospitalName, attendance,
             )}
 
             {mode === 'utilised' && (
-              colSummary.availableDates.length > 0 ? (
+              redeemableOn(colSummary, pickedDate).length > 0 ? (
                 <div>
                   <label className="block text-xs font-medium text-slate-600 mb-1.5">Redeems which COL credit? *</label>
                   <select
@@ -200,8 +210,8 @@ export default function ColMonthCalendar({ hospitalId, hospitalName, attendance,
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none"
                   >
                     <option value="">Select credit date...</option>
-                    {colSummary.availableDates.map((c) => (
-                      <option key={c.date} value={c.date}>{formatDate(c.date)}</option>
+                    {redeemableOn(colSummary, pickedDate).map((c) => (
+                      <option key={c.attendanceId} value={c.date}>{formatDate(c.date)}{c.reason ? ` · ${c.reason}` : ''} — valid till {formatDate(c.expiryDate)}</option>
                     ))}
                   </select>
                   <button
@@ -214,7 +224,7 @@ export default function ColMonthCalendar({ hospitalId, hospitalName, attendance,
                   </button>
                 </div>
               ) : (
-                <p className="text-xs text-amber-600 bg-amber-50 p-2.5 rounded-lg">No available COL credits at this hospital — none earned yet, or all are used or expired.</p>
+                <p className="text-xs text-amber-600 bg-amber-50 p-2.5 rounded-lg">No valid COL credit at this hospital for this date — none earned yet, or all are used or wasted (credits last 6 months).</p>
               )
             )}
 

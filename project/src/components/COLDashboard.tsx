@@ -1,11 +1,12 @@
 import { useEffect, useState, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import { Attendance, Hospital } from '@/lib/types';
+import { Attendance, Hospital, GovHoliday } from '@/lib/types';
 import { formatDate } from '@/lib/helpers';
 import { getColSummary, groupColByYear } from '@/lib/col';
+import { buildColContext, fetchGovHolidays } from '@/lib/holidays';
 import {
-  Zap, Building2, ArrowLeft, ChevronLeft, ChevronRight, Pencil, Trash2, Unlink, Check, X, Plus,
+  Zap, Building2, ArrowLeft, ChevronLeft, ChevronRight, Pencil, Trash2, Unlink, Check, X, Plus, PartyPopper,
 } from 'lucide-react';
 import ColMonthCalendar from './ColMonthCalendar';
 
@@ -13,6 +14,7 @@ export default function COLDashboard() {
   const { user } = useAuth();
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
   const [attendance, setAttendance] = useState<Attendance[]>([]);
+  const [holidays, setHolidays] = useState<GovHoliday[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingCreditId, setEditingCreditId] = useState<string | null>(null);
   const [editDate, setEditDate] = useState('');
@@ -24,28 +26,31 @@ export default function COLDashboard() {
   const [selectedHospitalId, setSelectedHospitalId] = useState<string | null>(null);
 
   const load = async () => {
-    const [{ data: h }, { data: att }] = await Promise.all([
+    const [{ data: h }, { data: att }, hol] = await Promise.all([
       supabase.from('hospitals').select('*').order('name'),
       supabase.from('attendance').select('*, hospital:hospitals(*)').order('attendance_date', { ascending: false }),
+      fetchGovHolidays(),
     ]);
     setHospitals(h || []);
+    setHolidays(hol);
     setAttendance(att || []);
     setLoading(false);
   };
 
   useEffect(() => { load(); }, []);
 
+  const colContext = useMemo(() => buildColContext(holidays, hospitals), [holidays, hospitals]);
   const hospitalBuckets = useMemo(
     () => hospitals.map((h) => {
-      const summary = getColSummary(attendance, h.id);
-      return { hospital: h, balance: summary.available, buckets: groupColByYear(summary) };
+      const summary = getColSummary(attendance, h.id, { context: colContext });
+      return { hospital: h, balance: summary.available, wasted: summary.wasted, buckets: groupColByYear(summary) };
     }),
-    [hospitals, attendance]
+    [hospitals, attendance, colContext]
   );
   const selected = hospitalBuckets.find((hb) => hb.hospital.id === selectedHospitalId) || null;
   const selectedColSummary = useMemo(
-    () => (selectedHospitalId ? getColSummary(attendance, selectedHospitalId) : null),
-    [attendance, selectedHospitalId]
+    () => (selectedHospitalId ? getColSummary(attendance, selectedHospitalId, { context: colContext }) : null),
+    [attendance, selectedHospitalId, colContext]
   );
 
   const openHospitalDetail = (hospitalId: string) => { setSelectedHospitalId(hospitalId); setLevel('detail'); };
@@ -88,13 +93,13 @@ export default function COLDashboard() {
             </button>
           )}
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">
-              {level === 'cards' ? 'COL Extra Duty Dashboard' : selected?.hospital.name || 'Hospital'}
+            <h1 className="page-title">
+              {level === 'cards' ? 'COL Dashboard' : selected?.hospital.name || 'Hospital'}
             </h1>
             <p className="text-slate-500 text-sm mt-0.5">
               {level === 'cards'
-                ? 'Hospital-wise COL credits earned via extra duty and leave redeemed against them. COL is hospital-strict.'
-                : 'Every year\'s COL credit dates — struck through in red once used.'}
+                ? 'Hospital-wise COL credits (COL duty + government-holiday duty), each valid for 6 months. COL is hospital-strict.'
+                : 'Every COL credit with its validity — struck through once used, faded once wasted.'}
             </p>
           </div>
         </div>
@@ -117,13 +122,13 @@ export default function COLDashboard() {
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {hospitalBuckets.map(({ hospital, balance, buckets }) => {
-              const yearBucket = buckets.find((b) => b.year === selectedYear) || { creditedCount: 0, usedCount: 0, expiredCount: 0 };
+            {hospitalBuckets.map(({ hospital, balance, wasted, buckets }) => {
+              const yearBucket = buckets.find((b) => b.year === selectedYear) || { creditedCount: 0, usedCount: 0, wastedCount: 0 };
               return (
                 <button
                   key={hospital.id}
                   onClick={() => openHospitalDetail(hospital.id)}
-                  className="bg-white rounded-xl border border-slate-200 p-5 text-left group hover:border-sky-300 hover:shadow-sm transition"
+                  className="card card-hover p-5 text-left group"
                 >
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
@@ -132,19 +137,23 @@ export default function COLDashboard() {
                       </div>
                       <h3 className="font-semibold text-slate-800">{hospital.name}</h3>
                     </div>
-                    <span className="text-xs font-semibold text-sky-700 bg-sky-50 px-2.5 py-1 rounded-full whitespace-nowrap">
-                      {balance} available
+                    <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full whitespace-nowrap">
+                      {balance} available{wasted > 0 ? ` · ${wasted} wasted` : ''}
                     </span>
                   </div>
                   <p className="text-[10px] font-medium text-slate-400 uppercase mb-1.5">{selectedYear}</p>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-3 gap-2">
                     <div className="p-2.5 rounded-lg bg-slate-50">
                       <p className="text-lg font-bold text-amber-700">{yearBucket.creditedCount}</p>
                       <p className="text-[10px] text-slate-400 uppercase">Credited</p>
                     </div>
                     <div className="p-2.5 rounded-lg bg-slate-50">
-                      <p className="text-lg font-bold text-red-600">{yearBucket.usedCount}</p>
+                      <p className="text-lg font-bold text-sky-700">{yearBucket.usedCount}</p>
                       <p className="text-[10px] text-slate-400 uppercase">Used</p>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-slate-50">
+                      <p className="text-lg font-bold text-rose-600">{yearBucket.wastedCount}</p>
+                      <p className="text-[10px] text-slate-400 uppercase">Wasted</p>
                     </div>
                   </div>
                 </button>
@@ -159,7 +168,7 @@ export default function COLDashboard() {
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-amber-700 bg-amber-50 px-3 py-1.5 rounded-full inline-flex items-center gap-1">
               <Zap className="w-3.5 h-3.5" /> {selectedColSummary.available} available / {selectedColSummary.accrued} accrued
-              {selectedColSummary.expired > 0 ? ` / ${selectedColSummary.expired} expired` : ''}
+              {selectedColSummary.wasted > 0 ? ` / ${selectedColSummary.wasted} wasted` : ''}
             </span>
             <button
               onClick={() => setShowCalendar(true)}
@@ -170,12 +179,12 @@ export default function COLDashboard() {
           </div>
 
           {selected.buckets.length === 0 ? (
-            <p className="text-sm text-slate-400 py-8 text-center bg-white rounded-xl border border-slate-200">No COL extra duties recorded yet at this hospital.</p>
+            <p className="text-sm text-slate-400 py-8 text-center card">No COL credits recorded yet at this hospital.</p>
           ) : (
             selected.buckets.map((bucket) => (
-              <div key={bucket.year} className="bg-white rounded-xl border border-slate-200 p-5">
+              <div key={bucket.year} className="card p-5">
                 <h2 className="font-semibold text-slate-700 mb-4">
-                  {bucket.year} <span className="text-xs font-normal text-slate-400">— {bucket.creditedCount} credited, {bucket.usedCount} used{bucket.expiredCount > 0 ? `, ${bucket.expiredCount} expired` : ''}</span>
+                  {bucket.year} <span className="text-xs font-normal text-slate-400">— {bucket.creditedCount} credited, {bucket.usedCount} used{bucket.wastedCount > 0 ? `, ${bucket.wastedCount} wasted` : ''}</span>
                 </h2>
                 <div className="space-y-2">
                   {bucket.creditDates.map((c) => {
@@ -185,12 +194,12 @@ export default function COLDashboard() {
                         key={c.attendanceId}
                         className={`flex items-center gap-3 p-3.5 rounded-lg border transition ${
                           c.status === 'available' ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-slate-50'
-                        } ${c.status === 'expired' ? 'opacity-60' : ''}`}
+                        } ${c.status === 'wasted' ? 'opacity-60' : ''}`}
                       >
                         <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${
                           c.status === 'available' ? 'bg-amber-100 text-amber-600' : 'bg-slate-200 text-slate-400'
                         }`}>
-                          <Zap className="w-4 h-4" />
+                          {c.source === 'holiday' ? <PartyPopper className="w-4 h-4" /> : <Zap className="w-4 h-4" />}
                         </div>
                         <div className="flex-1">
                           {isEditing ? (
@@ -203,12 +212,13 @@ export default function COLDashboard() {
                             />
                           ) : (
                             <p className={`text-sm font-medium ${
-                              c.status === 'used' ? 'text-red-600 line-through' : c.status === 'expired' ? 'text-slate-400' : 'text-slate-700'
+                              c.status === 'used' ? 'text-sky-700 line-through' : c.status === 'wasted' ? 'text-slate-400' : 'text-slate-700'
                             }`}>
                               {formatDate(c.date)}
                             </p>
                           )}
-                          {c.reason && <p className="text-xs text-slate-400 mt-0.5">{c.reason}</p>}
+                          {c.reason && <p className="text-xs text-slate-500 mt-0.5">{c.reason}</p>}
+                          <p className="text-[11px] text-slate-400 mt-0.5">{c.status === 'wasted' ? 'Expired' : 'Valid till'} {formatDate(c.expiryDate)}</p>
                         </div>
                         {isEditing ? (
                           <div className="flex items-center gap-1">
@@ -218,16 +228,20 @@ export default function COLDashboard() {
                         ) : (
                           <>
                             {c.status === 'used' ? (
-                              <span className="text-xs font-medium text-red-600 bg-red-50 px-2.5 py-1 rounded-full">Used</span>
-                            ) : c.status === 'expired' ? (
-                              <span className="text-xs font-medium text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full">Expired</span>
+                              <span className="text-xs font-medium text-sky-700 bg-sky-50 px-2.5 py-1 rounded-full">Used</span>
+                            ) : c.status === 'wasted' ? (
+                              <span className="text-xs font-medium text-rose-600 bg-rose-50 px-2.5 py-1 rounded-full">Wasted</span>
                             ) : (
-                              <span className="text-xs font-medium text-amber-600 bg-amber-100 px-2.5 py-1 rounded-full">Available</span>
+                              <span className="text-xs font-medium text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full">Available</span>
                             )}
+                            {c.source === 'holiday' ? (
+                              <span className="text-[10px] text-slate-400 w-14 text-center" title="Earned automatically for duty on a government holiday — change it from the Hospitals attendance log">auto</span>
+                            ) : (
                             <div className="flex items-center gap-1">
                               <button onClick={() => startEditCredit(c.attendanceId, c.date)} className="p-1.5 text-slate-400 hover:text-sky-600 hover:bg-sky-50 rounded-lg transition"><Pencil className="w-3.5 h-3.5" /></button>
                               <button onClick={() => deleteCredit(c.attendanceId)} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition"><Trash2 className="w-3.5 h-3.5" /></button>
                             </div>
+                            )}
                           </>
                         )}
                       </div>
@@ -239,7 +253,7 @@ export default function COLDashboard() {
           )}
 
           {selectedColSummary.usage.length > 0 && (
-            <div className="bg-white rounded-xl border border-slate-200 p-5">
+            <div className="card p-5">
               <h2 className="font-semibold text-slate-700 mb-4">Redemptions</h2>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -284,6 +298,7 @@ export default function COLDashboard() {
           hospitalId={selected.hospital.id}
           hospitalName={selected.hospital.name}
           attendance={attendance}
+          colContext={colContext}
           userId={user.id}
           initialYear={selectedYear}
           onClose={() => setShowCalendar(false)}

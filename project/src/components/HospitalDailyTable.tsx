@@ -1,20 +1,21 @@
 import { useMemo, useState } from 'react';
 import { formatDate, formatCurrency } from '@/lib/helpers';
 import { DailyRow } from '@/lib/hospitalSummary';
-import { Pencil, Trash2, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react';
+import { Pencil, Trash2, ChevronLeft, ChevronRight, AlertTriangle, PartyPopper } from 'lucide-react';
 
 export type { DailyRow };
 
-const STATUS_FILTERS = ['All', 'Present', '24 Hrs Duty', 'Leave', 'Extra Duty', 'Missing', 'Zero Activity'] as const;
+const STATUS_FILTERS = ['All', 'Duty', '24 Hrs Duty', 'Extra Duty', 'COL Duty', 'Leave', 'Holiday', 'Missing', 'Zero Activity'] as const;
 type StatusFilter = typeof STATUS_FILTERS[number];
 
 const PAGE_SIZE = 12;
 
 function statusBadgeClass(label: string): string {
-  if (label === 'Present') return 'bg-emerald-50 text-emerald-700';
+  if (label === 'Duty') return 'bg-emerald-50 text-emerald-700';
   if (label === '24 Hrs Duty') return 'bg-sky-50 text-sky-700';
-  if (label.startsWith('Leave')) return 'bg-red-50 text-red-700';
-  if (label === 'Extra Duty') return 'bg-amber-50 text-amber-700';
+  if (label.startsWith('Leave')) return 'bg-rose-50 text-rose-700';
+  if (label === 'Extra Duty') return 'bg-violet-50 text-violet-700';
+  if (label === 'COL Duty') return 'bg-amber-50 text-amber-700';
   return 'bg-slate-100 text-slate-600';
 }
 
@@ -39,6 +40,7 @@ export default function HospitalDailyTable({ rows, onEditDate, onDeleteDate }: P
       case 'Missing': return rows.filter((r) => r.isMissing);
       case 'Zero Activity': return rows.filter((r) => r.isZeroActivity);
       case 'Leave': return rows.filter((r) => r.attendanceStatusLabel?.startsWith('Leave'));
+      case 'Holiday': return rows.filter((r) => !!r.holidayName);
       default: return rows.filter((r) => r.attendanceStatusLabel === statusFilter);
     }
   }, [rows, statusFilter]);
@@ -113,10 +115,15 @@ export default function HospitalDailyTable({ rows, onEditDate, onDeleteDate }: P
                         >
                           {r.attendanceStatusLabel}
                         </span>
-                      ) : (
+                      ) : r.holidayName ? null : (
                         <span className="text-xs font-medium text-red-600">No Entry</span>
                       )}
                       {r.colReason && <p className="text-[10px] text-slate-400 mt-0.5 truncate max-w-[160px]">{r.colReason}</p>}
+                      {r.holidayName && (
+                        <p className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 mt-0.5">
+                          <PartyPopper className="w-3 h-3" /> {r.holidayName}
+                        </p>
+                      )}
                     </td>
                     <td className="px-3 py-2.5 text-right text-slate-600">{r.opCount}</td>
                     <td className="px-3 py-2.5 text-right text-slate-600">{r.ipCount}</td>

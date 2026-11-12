@@ -1,23 +1,28 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import { Patient, Hospital, Payment, Surgery, MonthlyEntry, Attendance, RevenueTransaction, ClassEntry } from '@/lib/types';
+import { Patient, Hospital, Payment, Surgery, MonthlyEntry, Attendance, RevenueTransaction, ClassEntry, GovHoliday } from '@/lib/types';
 import { formatDate, formatCurrency, daysUntil, todayLocalDateStr, monthRangeLocal } from '@/lib/helpers';
-import { getColSummary } from '@/lib/col';
+import { getColSummary, ColCreditDate } from '@/lib/col';
+import { buildColContext, fetchGovHolidays } from '@/lib/holidays';
 import { buildHospitalSummaries, SURGERY_CATEGORIES, LEAVE_BREAKDOWN_KEYS, LeaveBreakdown } from '@/lib/hospitalSummary';
 import { View } from './Layout';
+import ColDetailsModal, { ColDetailKind, ColDetailItem } from './ColDetailsModal';
 import {
-  Calendar, AlertTriangle, Zap, IndianRupee, Users, Activity, GraduationCap,
+  Calendar, AlertTriangle, Zap, IndianRupee, Users, Activity, GraduationCap, ChevronLeft, ChevronRight, ArrowRight, Plane,
 } from 'lucide-react';
 
 interface DashboardProps {
   onNavigate: (view: View) => void;
 }
 
-// Strictly Level 1 (global summary cards) + an upcoming follow-ups widget —
-// no date-wise tables, hospital drill-downs, or raw activity logs here.
-// Those now live on the Hospitals page (attendance-focused) and Reports
-// page (full Census/Surgery/Leave/COL/Fees hierarchy).
+const greeting = () => {
+  const h = new Date().getHours();
+  return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+};
+
+// Level 1 summary only — drill-downs live on the Hospitals, COL and
+// Reports pages.
 export default function Dashboard({ onNavigate }: DashboardProps) {
   const { user } = useAuth();
   const [patients, setPatients] = useState<Patient[]>([]);
@@ -28,12 +33,15 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const [revenueTransactions, setRevenueTransactions] = useState<RevenueTransaction[]>([]);
   const [attendance, setAttendance] = useState<Attendance[]>([]);
   const [classes, setClasses] = useState<ClassEntry[]>([]);
+  const [holidays, setHolidays] = useState<GovHoliday[]>([]);
   const [loading, setLoading] = useState(true);
+  const [colYear, setColYear] = useState(new Date().getFullYear());
+  const [colDetail, setColDetail] = useState<ColDetailKind | null>(null);
 
   useEffect(() => {
     if (!user) return;
     (async () => {
-      const [{ data: p }, { data: h }, { data: pay }, { data: sur }, { data: me }, { data: att }, { data: rt }, { data: cls }] = await Promise.all([
+      const [{ data: p }, { data: h }, { data: pay }, { data: sur }, { data: me }, { data: att }, { data: rt }, { data: cls }, hol] = await Promise.all([
         supabase.from('patients').select('*, hospital:hospitals(*)').order('created_at', { ascending: false }),
         supabase.from('hospitals').select('*').order('name'),
         supabase.from('payments').select('*, patient:patients(*)'),
@@ -42,6 +50,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
         supabase.from('attendance').select('*, hospital:hospitals(*)').order('attendance_date', { ascending: false }),
         supabase.from('revenue_transactions').select('*, hospital:hospitals(*)'),
         supabase.from('classes').select('*, hospital:hospitals(*)').order('class_date', { ascending: true }),
+        fetchGovHolidays(),
       ]);
       setPatients(p || []);
       setHospitals(h || []);
@@ -51,6 +60,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       setAttendance(att || []);
       setRevenueTransactions(rt || []);
       setClasses(cls || []);
+      setHolidays(hol);
       setLoading(false);
     })();
   }, [user]);
@@ -58,10 +68,11 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const now = new Date();
   const todayStr = todayLocalDateStr(now);
   const { start: monthStart, end: monthEnd } = monthRangeLocal(now.getFullYear(), now.getMonth());
+  const colContext = useMemo(() => buildColContext(holidays, hospitals), [holidays, hospitals]);
 
   const hospitalSummary = buildHospitalSummaries({
     hospitals, patients, payments, surgeries, monthlyEntries, revenueTransactions, attendance,
-    rangeStart: monthStart, rangeEnd: monthEnd, todayStr,
+    rangeStart: monthStart, rangeEnd: monthEnd, todayStr, colContext,
   }).filter((hs) => hs.hasActivity);
 
   const globalCensus = hospitalSummary.reduce((acc, hs) => ({
@@ -75,14 +86,29 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     LEAVE_BREAKDOWN_KEYS.forEach((k) => { acc[k.key] += hs.leaveBreakdown[k.key]; });
     return acc;
   }, { cl: 0, weekOff: 0, medical: 0, pdo: 0, col: 0, other: 0 } as LeaveBreakdown);
+  const totalLeave = LEAVE_BREAKDOWN_KEYS.reduce((s, k) => s + globalLeave[k.key], 0);
 
-  const globalCol = getColSummary(attendance); // all hospitals, all-time
   const globalFees = hospitalSummary.reduce((acc, hs) => ({
-    generated: acc.generated + hs.feesGenerated, received: acc.received + hs.feesReceived, pending: acc.pending + hs.overallPending,
-  }), { generated: 0, received: 0, pending: 0 });
+    pending: acc.pending + hs.overallPending, excess: acc.excess + hs.overallExcess,
+  }), { pending: 0, excess: 0 });
 
-  // Upcoming Follow-Up Patients — every patient with a follow-up date,
-  // soonest (or most overdue) first.
+  // COL: all hospitals, all-time balance; used and wasted are per calendar year.
+  const col = useMemo(() => getColSummary(attendance, undefined, { context: colContext, asOf: todayStr }), [attendance, colContext, todayStr]);
+  const colItems = useMemo<Record<ColDetailKind, ColDetailItem[]>>(() => {
+    const creditByKey = new Map<string, ColCreditDate>(col.creditDates.map((c) => [`${c.hospitalId}::${c.date}`, c]));
+    const inYear = (d: string) => d.startsWith(String(colYear));
+    return {
+      used: col.usage
+        .filter((u) => inYear(u.leaveDate))
+        .map((u) => ({ credit: creditByKey.get(`${u.hospitalId}::${u.compensatedWorkingDate}`)!, usedOn: u.leaveDate }))
+        .filter((i) => !!i.credit)
+        .sort((a, b) => (b.usedOn || '').localeCompare(a.usedOn || '')),
+      available: [...col.availableDates].sort((a, b) => a.expiryDate.localeCompare(b.expiryDate)).map((credit) => ({ credit })),
+      wasted: col.wastedDates.filter((c) => inYear(c.expiryDate)).sort((a, b) => b.expiryDate.localeCompare(a.expiryDate)).map((credit) => ({ credit })),
+    };
+  }, [col, colYear]);
+  const nextExpiry = colItems.available[0]?.credit.expiryDate || null;
+
   const upcomingFollowUps = patients
     .filter((p) => !!p.follow_up_date)
     .map((p) => ({ patient: p, daysLeft: daysUntil(p.follow_up_date) }))
@@ -92,9 +118,6 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       return a.daysLeft - b.daysLeft;
     });
 
-  // Upcoming Classes & Presentations — sessions due in the next 24-72
-  // hours (day-granularity: 1-3 days out, since class_date has no time
-  // component to combine with class_time's free text).
   const upcomingClasses = classes
     .filter((c) => !!c.class_date)
     .map((c) => ({ cls: c, daysLeft: daysUntil(c.class_date) }))
@@ -109,152 +132,190 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     );
   }
 
+  const colTile = (kind: ColDetailKind, value: number, label: string, sub: string, tone: string) => (
+    <button
+      onClick={() => setColDetail(kind)}
+      className={`group rounded-xl p-3.5 text-left transition ring-1 ring-inset hover:shadow-md ${tone}`}
+    >
+      <p className="text-3xl font-bold tabular-nums leading-none">{value}</p>
+      <p className="text-xs font-semibold mt-2">{label}</p>
+      <p className="text-[11px] opacity-75 mt-0.5 flex items-center gap-1">{sub} <ArrowRight className="w-3 h-3 opacity-0 group-hover:opacity-100 transition" /></p>
+    </button>
+  );
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-800">Dashboard</h1>
-        <p className="text-slate-500 text-sm mt-0.5">Summary for {now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })} — see Reports for full history and exports</p>
+      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-sky-600 via-sky-700 to-teal-700 p-6 sm:p-7 text-white shadow-lg shadow-sky-900/10">
+        <div className="absolute -right-10 -top-16 w-56 h-56 rounded-full bg-white/10 blur-2xl" />
+        <div className="absolute right-24 -bottom-20 w-48 h-48 rounded-full bg-teal-300/20 blur-2xl" />
+        <p className="relative text-sky-100 text-sm font-medium">{now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
+        <h1 className="relative text-2xl sm:text-3xl font-bold mt-1">{greeting()}, Doctor</h1>
+        <p className="relative text-sky-100/90 text-sm mt-1">Your practice at a glance for {now.toLocaleDateString('en-GB', { month: 'long' })}</p>
       </div>
 
       {patients.length === 0 && hospitals.length === 0 && (
-        <div className="bg-white rounded-xl border border-slate-200 p-8 text-center">
-          <p className="text-slate-500 mb-3">Welcome! Start by adding a hospital, then create your first patient.</p>
-          <button onClick={() => onNavigate('hospitals')} className="px-4 py-2 bg-sky-600 text-white rounded-lg text-sm font-medium hover:bg-sky-700 transition">Add Your First Hospital</button>
+        <div className="card p-8 text-center">
+          <p className="text-slate-500 mb-3">Welcome! Start by adding a hospital, then record your first case.</p>
+          <button onClick={() => onNavigate('hospitals')} className="btn-primary">Add Your First Hospital</button>
         </div>
       )}
 
-      {/* Level 1: Top-level summary cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        <button onClick={() => onNavigate('reports')} className="bg-white rounded-xl border border-slate-200 p-5 text-left hover:border-sky-300 hover:shadow-sm transition">
-          <div className="flex items-center gap-2 mb-3"><Users className="w-4 h-4 text-sky-500" /><h2 className="font-semibold text-slate-700">Census</h2></div>
+      {/* COL — the doctor's compensatory-off position */}
+      <div className="card p-5">
+        <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center"><Zap className="w-5 h-5" /></div>
+            <div>
+              <h2 className="font-semibold text-slate-800">COL</h2>
+              <p className="text-xs text-slate-500">{nextExpiry ? `Next credit expires ${formatDate(nextExpiry)}` : 'Credits are valid for 6 months'}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+              <button onClick={() => setColYear(colYear - 1)} className="p-1 rounded-md hover:bg-white transition" aria-label="Previous year"><ChevronLeft className="w-4 h-4 text-slate-500" /></button>
+              <span className="text-sm font-semibold text-slate-700 px-1.5 tabular-nums">{colYear}</span>
+              <button onClick={() => setColYear(colYear + 1)} disabled={colYear >= now.getFullYear()} className="p-1 rounded-md hover:bg-white transition disabled:opacity-30" aria-label="Next year"><ChevronRight className="w-4 h-4 text-slate-500" /></button>
+            </div>
+            <button onClick={() => onNavigate('col')} className="text-xs font-semibold text-sky-700 hover:text-sky-800 px-2">Manage →</button>
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-2.5 sm:gap-3">
+          {colTile('used', colItems.used.length, 'Availed', `used in ${colYear}`, 'bg-sky-50 text-sky-800 ring-sky-200')}
+          {colTile('available', colItems.available.length, 'Available', 'with validity', 'bg-emerald-50 text-emerald-800 ring-emerald-200')}
+          {colTile('wasted', colItems.wasted.length, 'Wasted', `expired in ${colYear}`, 'bg-rose-50 text-rose-800 ring-rose-200')}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <SummaryCard icon={Users} tone="bg-sky-100 text-sky-600" title="Census" onClick={() => onNavigate('reports')}>
           <div className="grid grid-cols-3 gap-2 text-center">
-            <div><p className="text-xl font-bold text-sky-700">{globalCensus.op}</p><p className="text-[11px] text-slate-400">OP</p></div>
-            <div><p className="text-xl font-bold text-violet-700">{globalCensus.ip}</p><p className="text-[11px] text-slate-400">IP</p></div>
-            <div><p className="text-xl font-bold text-amber-700">{globalCensus.opinion}</p><p className="text-[11px] text-slate-400">Opinion</p></div>
+            <Stat value={globalCensus.op} label="OP" color="text-sky-700" />
+            <Stat value={globalCensus.ip} label="IP" color="text-violet-700" />
+            <Stat value={globalCensus.opinion} label="Opinion" color="text-amber-700" />
           </div>
-        </button>
+        </SummaryCard>
 
-        <button onClick={() => onNavigate('reports')} className="bg-white rounded-xl border border-slate-200 p-5 text-left hover:border-sky-300 hover:shadow-sm transition">
-          <div className="flex items-center gap-2 mb-3"><Activity className="w-4 h-4 text-violet-500" /><h2 className="font-semibold text-slate-700">Surgery</h2></div>
-          <div className="grid grid-cols-5 gap-1 text-center">
-            {SURGERY_CATEGORIES.map((c) => (
-              <div key={c}><p className="text-lg font-bold text-slate-800">{globalSurgeryCategories[c]}</p><p className="text-[9px] text-slate-400">{c}</p></div>
-            ))}
+        <SummaryCard icon={Activity} tone="bg-violet-100 text-violet-600" title="Surgery" onClick={() => onNavigate('patients')}>
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <Stat value={globalSurgeryCategories.Major} label="Major" color="text-violet-700" />
+            <Stat value={globalSurgeryCategories.Minor} label="Minor" color="text-sky-700" />
+            <Stat value={globalSurgeryCategories.Bedside} label="Bedside" color="text-emerald-700" />
           </div>
-        </button>
+        </SummaryCard>
 
-        <button onClick={() => onNavigate('hospitals')} className="bg-white rounded-xl border border-slate-200 p-5 text-left hover:border-sky-300 hover:shadow-sm transition">
-          <div className="flex items-center gap-2 mb-3"><Calendar className="w-4 h-4 text-red-500" /><h2 className="font-semibold text-slate-700">Leave</h2></div>
-          <div className="grid grid-cols-6 gap-1 text-center">
+        <SummaryCard icon={Plane} tone="bg-rose-100 text-rose-600" title={`Leave · ${totalLeave}`} onClick={() => onNavigate('hospitals')}>
+          <div className="grid grid-cols-3 gap-x-2 gap-y-1.5 text-center">
             {LEAVE_BREAKDOWN_KEYS.map((k) => (
-              <div key={k.key}>
-                <p className={`text-base font-bold ${k.key === 'col' ? 'text-amber-700' : k.key === 'other' ? 'text-slate-600' : 'text-red-700'}`}>{globalLeave[k.key]}</p>
-                <p className="text-[9px] text-slate-400">{k.label}</p>
-              </div>
+              <Stat key={k.key} value={globalLeave[k.key]} label={k.label} color={k.key === 'col' ? 'text-amber-700' : 'text-slate-700'} small />
             ))}
           </div>
-        </button>
+        </SummaryCard>
 
-        <button onClick={() => onNavigate('col')} className="bg-white rounded-xl border border-slate-200 p-5 text-left hover:border-sky-300 hover:shadow-sm transition">
-          <div className="flex items-center gap-2 mb-3"><Zap className="w-4 h-4 text-amber-500" /><h2 className="font-semibold text-slate-700">COL</h2></div>
-          <div className="grid grid-cols-2 gap-2 text-center">
-            <div><p className="text-xl font-bold text-amber-700">{globalCol.accrued}</p><p className="text-[11px] text-slate-400">Earned</p></div>
-            <div><p className="text-xl font-bold text-slate-600">{globalCol.redeemed}</p><p className="text-[11px] text-slate-400">Used</p></div>
+        <SummaryCard icon={IndianRupee} tone="bg-emerald-100 text-emerald-600" title="Fees" onClick={() => onNavigate('revenue')}>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-lg bg-rose-50 p-2.5">
+              <p className={`text-lg font-bold tabular-nums ${globalFees.pending > 0 ? 'text-rose-600' : 'text-slate-400'}`}>{formatCurrency(globalFees.pending)}</p>
+              <p className="text-[11px] text-slate-500">Pending</p>
+            </div>
+            <div className="rounded-lg bg-emerald-50 p-2.5">
+              <p className={`text-lg font-bold tabular-nums ${globalFees.excess > 0 ? 'text-emerald-700' : 'text-slate-400'}`}>{formatCurrency(globalFees.excess)}</p>
+              <p className="text-[11px] text-slate-500">Excess paid</p>
+            </div>
           </div>
-        </button>
-
-        <button onClick={() => onNavigate('revenue')} className="bg-white rounded-xl border border-slate-200 p-5 text-left hover:border-sky-300 hover:shadow-sm transition sm:col-span-2 lg:col-span-1">
-          <div className="flex items-center gap-2 mb-3"><IndianRupee className="w-4 h-4 text-emerald-500" /><h2 className="font-semibold text-slate-700">Fees</h2></div>
-          <div className="grid grid-cols-3 gap-2 text-center">
-            <div><p className="text-lg font-bold text-slate-700">{formatCurrency(globalFees.generated)}</p><p className="text-[11px] text-slate-400">Generated</p></div>
-            <div><p className="text-lg font-bold text-emerald-600">{formatCurrency(globalFees.received)}</p><p className="text-[11px] text-slate-400">Received</p></div>
-            <div><p className={`text-lg font-bold ${globalFees.pending > 0 ? 'text-red-600' : 'text-slate-500'}`}>{formatCurrency(globalFees.pending)}</p><p className="text-[11px] text-slate-400">Pending</p></div>
-          </div>
-        </button>
+          <p className="text-[11px] text-slate-400 mt-2">Tallied month by month</p>
+        </SummaryCard>
       </div>
 
       {globalFees.pending > 0 && (
-        <div className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-4 flex items-center gap-3">
+        <div className="rounded-2xl bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 p-4 flex items-center gap-3 flex-wrap">
           <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0" />
-          <p className="text-sm text-amber-800"><span className="font-semibold">{formatCurrency(globalFees.pending)}</span> in pending fees overall, up to today.</p>
-          <button onClick={() => onNavigate('revenue')} className="ml-auto text-sm font-medium text-amber-700 hover:text-amber-800 underline">View Revenue →</button>
+          <p className="text-sm text-amber-800"><span className="font-semibold">{formatCurrency(globalFees.pending)}</span> pending — the total of each month's unpaid balance, up to today.</p>
+          <button onClick={() => onNavigate('revenue')} className="ml-auto text-sm font-semibold text-amber-700 hover:text-amber-800">View Revenue →</button>
         </div>
       )}
 
-      {/* Upcoming Follow-Up Patients widget */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <div className="flex items-center gap-2 mb-4"><Calendar className="w-4 h-4 text-violet-500" /><h2 className="font-semibold text-slate-700">Upcoming Follow-Up Patients</h2></div>
-        {upcomingFollowUps.length === 0 ? (
-          <p className="text-sm text-slate-400 py-4 text-center">No follow-up visits scheduled.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-100 text-left text-xs text-slate-500 uppercase tracking-wide">
-                  <th className="px-3 py-2 font-medium">Patient</th>
-                  <th className="px-3 py-2 font-medium">Hospital</th>
-                  <th className="px-3 py-2 font-medium">Scheduled Date</th>
-                  <th className="px-3 py-2 font-medium">Notes</th>
-                  <th className="px-3 py-2 font-medium text-right">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {upcomingFollowUps.slice(0, 15).map(({ patient, daysLeft }) => {
-                  const overdue = daysLeft !== null && daysLeft < 0;
-                  const soon = daysLeft !== null && daysLeft >= 0 && daysLeft <= 7;
-                  return (
-                    <tr key={patient.id} className="border-b border-slate-50 hover:bg-slate-50 transition">
-                      <td className="px-3 py-2.5">
-                        <p className="font-medium text-slate-700">{patient.patient_name}</p>
-                        <p className="text-xs font-mono text-slate-400">{patient.unique_id}</p>
-                      </td>
-                      <td className="px-3 py-2.5 text-slate-500">{patient.hospital?.name || '—'}</td>
-                      <td className="px-3 py-2.5 text-slate-600">{formatDate(patient.follow_up_date)}</td>
-                      <td className="px-3 py-2.5 text-slate-500 max-w-xs truncate">{patient.diagnosis || '—'}</td>
-                      <td className="px-3 py-2.5 text-right">
-                        {daysLeft !== null && (
-                          <span className={`text-xs font-medium px-2 py-1 rounded ${overdue ? 'bg-red-100 text-red-700' : soon ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>
-                            {overdue ? `${Math.abs(daysLeft)}d overdue` : daysLeft === 0 ? 'Today' : `in ${daysLeft}d`}
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        <div className="card p-5 lg:col-span-3">
+          <div className="flex items-center gap-2 mb-4"><Calendar className="w-4 h-4 text-violet-500" /><h2 className="font-semibold text-slate-800">Upcoming Follow-ups</h2></div>
+          {upcomingFollowUps.length === 0 ? (
+            <p className="text-sm text-slate-400 py-6 text-center">No follow-up visits scheduled.</p>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {upcomingFollowUps.slice(0, 8).map(({ patient, daysLeft }) => {
+                const overdue = daysLeft !== null && daysLeft < 0;
+                const soon = daysLeft !== null && daysLeft >= 0 && daysLeft <= 7;
+                return (
+                  <div key={patient.id} className="flex items-center gap-3 py-2.5">
+                    <div className="w-9 h-9 rounded-full bg-violet-50 text-violet-600 flex items-center justify-center text-sm font-bold flex-shrink-0">
+                      {patient.patient_name.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-slate-700 truncate">{patient.patient_name}</p>
+                      <p className="text-xs text-slate-400 truncate">{patient.hospital?.name || '—'} · {formatDate(patient.follow_up_date)}{patient.diagnosis ? ` · ${patient.diagnosis}` : ''}</p>
+                    </div>
+                    {daysLeft !== null && (
+                      <span className={`text-xs font-semibold px-2 py-1 rounded-full flex-shrink-0 ${overdue ? 'bg-rose-100 text-rose-700' : soon ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>
+                        {overdue ? `${Math.abs(daysLeft)}d overdue` : daysLeft === 0 ? 'Today' : `in ${daysLeft}d`}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="card p-5 lg:col-span-2">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2"><GraduationCap className="w-4 h-4 text-violet-500" /><h2 className="font-semibold text-slate-800">Classes · next 3 days</h2></div>
+            <button onClick={() => onNavigate('hospitals')} className="text-xs font-semibold text-violet-600 hover:text-violet-700">View all →</button>
           </div>
-        )}
+          {upcomingClasses.length === 0 ? (
+            <p className="text-sm text-slate-400 py-6 text-center">Nothing scheduled.</p>
+          ) : (
+            <div className="space-y-2">
+              {upcomingClasses.map(({ cls, daysLeft }) => (
+                <div key={cls.id} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-50">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-slate-700 truncate">{cls.topic || cls.class_type || 'Untitled session'}</p>
+                    <p className="text-xs text-slate-400 truncate">
+                      {formatDate(cls.class_date)}{cls.class_time ? ` · ${cls.class_time}` : ''}{cls.location ? ` · ${cls.location}` : ''}
+                    </p>
+                  </div>
+                  <span className={`flex-shrink-0 text-xs font-semibold px-2 py-1 rounded-full ${(daysLeft ?? 3) <= 1 ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}`}>
+                    {daysLeft === 0 ? 'Today' : daysLeft === 1 ? 'Tomorrow' : `in ${daysLeft}d`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Upcoming Classes & Presentations widget */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2"><GraduationCap className="w-4 h-4 text-violet-500" /><h2 className="font-semibold text-slate-700">Upcoming Classes &amp; Presentations</h2></div>
-          <button onClick={() => onNavigate('hospitals')} className="text-xs font-medium text-violet-600 hover:text-violet-700">View all →</button>
-        </div>
-        {upcomingClasses.length === 0 ? (
-          <p className="text-sm text-slate-400 py-4 text-center">Nothing scheduled in the next 3 days.</p>
-        ) : (
-          <div className="space-y-2">
-            {upcomingClasses.map(({ cls, daysLeft }) => (
-              <div key={cls.id} className="flex items-center justify-between gap-3 p-3 rounded-lg border border-slate-100 bg-slate-50">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-slate-700 truncate">{cls.topic || cls.class_type || 'Untitled session'}</p>
-                  <p className="text-xs text-slate-400 truncate">
-                    {formatDate(cls.class_date)}{cls.class_time ? ` · ${cls.class_time}` : ''}
-                    {cls.location ? ` · ${cls.location}` : ''}
-                    {cls.hospital?.name ? ` · ${cls.hospital.name}` : ''}
-                  </p>
-                </div>
-                <span className={`flex-shrink-0 text-xs font-medium px-2 py-1 rounded ${(daysLeft ?? 3) <= 1 ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
-                  {daysLeft === 0 ? 'Today' : daysLeft === 1 ? 'Tomorrow' : `in ${daysLeft}d`}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
+      {colDetail && (
+        <ColDetailsModal kind={colDetail} year={colYear} items={colItems[colDetail]} onClose={() => setColDetail(null)} />
+      )}
+    </div>
+  );
+}
+
+function SummaryCard({ icon: Icon, tone, title, onClick, children }: { icon: typeof Users; tone: string; title: string; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button onClick={onClick} className="card card-hover p-5 text-left flex flex-col justify-start">
+      <div className="flex items-center gap-2.5 mb-4">
+        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${tone}`}><Icon className="w-4 h-4" /></div>
+        <h2 className="font-semibold text-slate-800">{title}</h2>
       </div>
+      {children}
+    </button>
+  );
+}
+
+function Stat({ value, label, color, small }: { value: number; label: string; color: string; small?: boolean }) {
+  return (
+    <div>
+      <p className={`${small ? 'text-base' : 'text-2xl'} font-bold tabular-nums ${color}`}>{value}</p>
+      <p className="text-[11px] text-slate-400">{label}</p>
     </div>
   );
 }

@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
-import { Hospital, MonthlyEntry, Attendance, Patient, ClassEntry, Payment, RevenueTransaction, Surgery } from '@/lib/types';
+import { Hospital, MonthlyEntry, Attendance, Patient, ClassEntry, Payment, RevenueTransaction, Surgery, GovHoliday } from '@/lib/types';
 import { formatDate, uploadImage, getImageUrl, ensurePresentAttendance, todayLocalDateStr, monthRangeLocal, isSurgicalCase } from '@/lib/helpers';
-import { getColSummary } from '@/lib/col';
+import { getColSummary, redeemableOn } from '@/lib/col';
+import { buildColContext, fetchGovHolidays } from '@/lib/holidays';
 import { buildHospitalSummaries, LEAVE_BREAKDOWN_KEYS } from '@/lib/hospitalSummary';
 import { AttendanceChoiceState, defaultAttendanceChoiceState, validateAttendanceChoice, buildAttendanceFields } from '@/lib/attendance';
 import {
   Building2, Plus, Trash2, X, Calendar, Pencil, Clock, Search,
-  UserRound, Stethoscope, ArrowRight, GraduationCap, Upload, Download, ArrowLeft, ChevronLeft, ChevronRight, Award,
+  UserRound, Stethoscope, ArrowRight, GraduationCap, Upload, Download, ArrowLeft, ChevronLeft, ChevronRight, Award, Landmark,
 } from 'lucide-react';
 import PatientForm from './PatientForm';
 import PatientRegistrationWizard from './PatientRegistrationWizard';
@@ -17,6 +18,7 @@ import HospitalDailyTable from './HospitalDailyTable';
 import EditDayModal from './EditDayModal';
 import AttendanceStatusPicker from './AttendanceStatusPicker';
 import PresentDutyPrompt from './PresentDutyPrompt';
+import GovHolidays from './GovHolidays';
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -37,6 +39,8 @@ export default function Hospitals() {
   const [showEntry, setShowEntry] = useState(false);
   const [showAttendance, setShowAttendance] = useState(false);
   const [name, setName] = useState('');
+  const [isGovernment, setIsGovernment] = useState(false);
+  const [holidays, setHolidays] = useState<GovHoliday[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   // Layer 1 (hospital metric cards) / Layer 2 (date-wise drill-down)
@@ -83,10 +87,16 @@ export default function Hospitals() {
   const [attNotes, setAttNotes] = useState('');
   const [attError, setAttError] = useState<string | null>(null);
 
+  const colContext = useMemo(() => buildColContext(holidays, hospitals), [holidays, hospitals]);
+
   // COL credits are hospital-strict: a credit earned at hospital A can only
   // be redeemed at hospital A, so this is scoped to whichever hospital is
-  // currently selected in the attendance form.
-  const colSummary = useMemo(() => getColSummary(attendance, attHospital || undefined), [attendance, attHospital]);
+  // currently selected in the attendance form, judged as of the form's date.
+  const colSummary = useMemo(
+    () => getColSummary(attendance, attHospital || undefined, { context: colContext, asOf: attDate }),
+    [attendance, attHospital, colContext, attDate]
+  );
+  const attHolidayName = attHospital && colContext.governmentHospitalIds.has(attHospital) ? colContext.holidayNameOn(attDate) : null;
 
   // Entry form
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -99,7 +109,7 @@ export default function Hospitals() {
   const [eNotes, setENotes] = useState('');
 
   const load = async () => {
-    const [{ data: h }, { data: me }, { data: att }, { data: pts }, { data: cls }, { data: pay }, { data: sur }, { data: rt }] = await Promise.all([
+    const [{ data: h }, { data: me }, { data: att }, { data: pts }, { data: cls }, { data: pay }, { data: sur }, { data: rt }, hol] = await Promise.all([
       supabase.from('hospitals').select('*').order('name'),
       supabase.from('monthly_entries').select('*, hospital:hospitals(*)').order('entry_date', { ascending: false }),
       supabase.from('attendance').select('*, hospital:hospitals(*)').order('attendance_date', { ascending: false }),
@@ -108,8 +118,10 @@ export default function Hospitals() {
       supabase.from('payments').select('*, patient:patients(*)'),
       supabase.from('surgeries').select('*'),
       supabase.from('revenue_transactions').select('*, hospital:hospitals(*)'),
+      fetchGovHolidays(),
     ]);
     setHospitals(h || []);
+    setHolidays(hol);
     setEntries(me || []);
     setAttendance(att || []);
     setPatients(pts || []);
@@ -146,10 +158,17 @@ export default function Hospitals() {
     e.preventDefault();
     setError(null);
     if (!name.trim()) return;
-    const { error } = await supabase.from('hospitals').insert({ name: name.trim() });
-    if (error) { setError(error.message); return; }
+    const { error } = await supabase.from('hospitals').insert(isGovernment ? { name: name.trim(), is_government: true } : { name: name.trim() });
+    if (error) { setError(error.message.includes('is_government') ? 'Government hospitals need the database update first — see the setup instructions.' : error.message); return; }
     setName('');
+    setIsGovernment(false);
     setShowAdd(false);
+    load();
+  };
+
+  const toggleGovernment = async (h: Hospital) => {
+    const { error } = await supabase.from('hospitals').update({ is_government: !h.is_government }).eq('id', h.id);
+    if (error) { alert(error.message.includes('is_government') ? 'Run the database update in Supabase first to enable government hospitals.' : error.message); return; }
     load();
   };
 
@@ -333,7 +352,7 @@ export default function Hospitals() {
 
   const hospitalSummary = buildHospitalSummaries({
     hospitals, patients, payments, surgeries, monthlyEntries: entries, revenueTransactions, attendance,
-    rangeStart: monthStart, rangeEnd: monthEnd, todayStr,
+    rangeStart: monthStart, rangeEnd: monthEnd, todayStr, colContext,
   });
   const selectedHospitalSummary = hospitalSummary.find((hs) => hs.hospital.id === selectedHospitalId) || null;
 
@@ -429,16 +448,16 @@ export default function Hospitals() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Hospitals</h1>
-          <p className="text-slate-500 text-sm mt-0.5">Manage hospitals and daily OP/IP entries</p>
+          <h1 className="page-title">Hospitals</h1>
+          <p className="page-subtitle">Attendance, daily entries, government holidays and COL</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <button
             onClick={() => { resetAttendanceForm(); setShowAttendance(true); }}
             disabled={hospitals.length === 0}
-            className="flex items-center gap-2 px-4 py-2 bg-amber-600 text-white rounded-lg text-sm font-medium hover:bg-amber-700 transition shadow-sm disabled:opacity-50"
+            className="btn-primary bg-emerald-600 hover:bg-emerald-700"
           >
             <Clock className="w-4 h-4" />
             Add Attendance
@@ -446,23 +465,20 @@ export default function Hospitals() {
           <button
             onClick={() => { resetEntryForm(); setShowEntry(true); }}
             disabled={hospitals.length === 0}
-            className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 transition shadow-sm disabled:opacity-50"
+            className="btn-secondary"
           >
             <Calendar className="w-4 h-4" />
-            Add Daily Entry
+            Daily Entry
           </button>
-          <button
-            onClick={() => setShowAdd(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-sky-600 text-white rounded-lg text-sm font-medium hover:bg-sky-700 transition shadow-sm"
-          >
+          <button onClick={() => setShowAdd(true)} className="btn-secondary">
             <Plus className="w-4 h-4" />
-            Add Hospital
+            Hospital
           </button>
         </div>
       </div>
 
       {/* OP / IP Patient Entry */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
+      <div className="card p-5">
         <div className="flex items-center gap-2 mb-1">
           <Search className="w-4 h-4 text-sky-500" />
           <h2 className="font-semibold text-slate-700">OP / IP Patient Entry</h2>
@@ -545,7 +561,7 @@ export default function Hospitals() {
       </div>
 
       {/* Classes / Teaching — academic scheduler + presentation repository */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5">
+      <div className="card p-5">
         <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
           <div className="flex items-center gap-2">
             <GraduationCap className="w-4 h-4 text-violet-500" />
@@ -641,7 +657,7 @@ export default function Hospitals() {
               {level === 'cards' ? 'Hospital-wise Attendance' : selectedHospitalSummary?.hospital.name || 'Hospital'}
             </h2>
             <p className="text-slate-400 text-xs mt-0.5">
-              {level === 'cards' ? 'Days present, duties, leaves and COL — click a hospital for the date-wise log' : `Date-wise log — ${MONTHS[selectedMonth]} ${selectedYear}`}
+              {level === 'cards' ? 'Duty days, 24-hour duties, leaves and COL — click a hospital for the date-wise log' : `Date-wise log — ${MONTHS[selectedMonth]} ${selectedYear}`}
             </p>
           </div>
         </div>
@@ -673,27 +689,36 @@ export default function Hospitals() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {hospitalSummary.map((hs) => (
-              <div key={hs.hospital.id} className="bg-white rounded-xl border border-slate-200 p-5 group hover:border-sky-300 hover:shadow-sm transition">
-                <div className="flex items-start justify-between mb-3">
-                  <button onClick={() => openHospitalDetail(hs.hospital.id)} className="flex items-center gap-2 text-left">
-                    <div className="w-9 h-9 bg-emerald-50 rounded-lg flex items-center justify-center flex-shrink-0">
-                      <Building2 className="w-4.5 h-4.5 text-emerald-600" />
+              <div key={hs.hospital.id} className="card card-hover p-5 group">
+                <div className="flex items-start justify-between gap-2 mb-3">
+                  <button onClick={() => openHospitalDetail(hs.hospital.id)} className="flex items-center gap-2.5 text-left min-w-0">
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${hs.hospital.is_government ? 'bg-amber-100 text-amber-600' : 'bg-emerald-100 text-emerald-600'}`}>
+                      {hs.hospital.is_government ? <Landmark className="w-5 h-5" /> : <Building2 className="w-5 h-5" />}
                     </div>
-                    <h3 className="font-semibold text-slate-800">{hs.hospital.name}</h3>
+                    <h3 className="font-semibold text-slate-800 truncate">{hs.hospital.name}</h3>
                   </button>
-                  <button
-                    onClick={() => handleDeleteHospital(hs.hospital.id)}
-                    className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition flex-shrink-0"
-                    title="Delete hospital"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <button
+                      onClick={() => toggleGovernment(hs.hospital)}
+                      className={`text-[11px] font-semibold px-2 py-1 rounded-full transition ${hs.hospital.is_government ? 'bg-amber-100 text-amber-700 hover:bg-amber-200' : 'bg-slate-100 text-slate-400 hover:bg-slate-200 hover:text-slate-600'}`}
+                      title={hs.hospital.is_government ? 'Government hospital — duty on government holidays earns COL. Click to unmark.' : 'Mark as government hospital'}
+                    >
+                      {hs.hospital.is_government ? 'Govt' : 'Private'}
+                    </button>
+                    <button
+                      onClick={() => handleDeleteHospital(hs.hospital.id)}
+                      className="opacity-0 group-hover:opacity-100 p-1 text-slate-300 hover:text-red-500 transition"
+                      title="Delete hospital"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
                 <button onClick={() => openHospitalDetail(hs.hospital.id)} className="w-full text-left space-y-3">
                   <div className="grid grid-cols-2 gap-3">
                     <div className="p-2.5 rounded-lg bg-slate-50">
                       <p className="text-lg font-bold text-emerald-700">{hs.present}</p>
-                      <p className="text-[10px] text-slate-400 uppercase">Days Present</p>
+                      <p className="text-[10px] text-slate-400 uppercase">Duty Days</p>
                     </div>
                     <div className="p-2.5 rounded-lg bg-slate-50">
                       <p className="text-lg font-bold text-sky-700">{hs.dutyCount}</p>
@@ -715,7 +740,7 @@ export default function Hospitals() {
                   </div>
                   <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
                     <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700">
-                      <Award className="w-3.5 h-3.5" /> COL: {hs.colAccrued} accrued / {hs.colAvailable} available
+                      <Award className="w-3.5 h-3.5" /> COL: {hs.colAvailable} available{hs.colWasted > 0 ? ` · ${hs.colWasted} wasted` : ''}
                     </span>
                     {hs.missingEntryDates.length > 0 && (
                       <span className="text-xs text-red-600 font-medium">{hs.missingEntryDates.length} missing</span>
@@ -726,6 +751,10 @@ export default function Hospitals() {
             ))}
           </div>
         )
+      )}
+
+      {level === 'cards' && user && (
+        <GovHolidays holidays={holidays} userId={user.id} onChanged={load} />
       )}
 
       {level === 'detail' && selectedHospitalSummary && (
@@ -760,6 +789,7 @@ export default function Hospitals() {
           existingEntry={entries.find((me) => me.hospital_id === editDayModal.hospitalId && (me.entry_date || me.month).substring(0, 10) === editDayModal.date) || null}
           existingAttendance={attendance.find((a) => a.hospital_id === editDayModal.hospitalId && a.attendance_date === editDayModal.date) || null}
           attendance={attendance}
+          colContext={colContext}
           userId={user!.id}
           onClose={() => setEditDayModal(null)}
           onSaved={() => { setEditDayModal(null); load(); }}
@@ -784,6 +814,13 @@ export default function Hospitals() {
                 autoFocus
               />
             </div>
+            <label className="flex items-start gap-3 p-3 rounded-xl border border-slate-200 cursor-pointer hover:bg-slate-50 transition">
+              <input type="checkbox" checked={isGovernment} onChange={(e) => setIsGovernment(e.target.checked)} className="mt-0.5 w-4 h-4 rounded border-slate-300 text-amber-600 focus:ring-amber-500" />
+              <span>
+                <span className="flex items-center gap-1.5 text-sm font-medium text-slate-700"><Landmark className="w-4 h-4 text-amber-500" /> Government hospital</span>
+                <span className="block text-xs text-slate-400 mt-0.5">Duty here on a government holiday (incl. second Saturdays) earns COL automatically.</span>
+              </span>
+            </label>
             {error && <p className="text-sm text-red-600">{error}</p>}
             <button type="submit" className="w-full py-2.5 bg-sky-600 text-white rounded-lg font-medium hover:bg-sky-700 transition">
               Add Hospital
@@ -873,13 +910,19 @@ export default function Hospitals() {
               <label htmlFor="att-date" className="block text-sm font-medium text-slate-600 mb-1.5">Date *</label>
               <input id="att-date" name="attendanceDate" type="date" required value={attDate} onChange={(e) => setAttDate(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" />
             </div>
-            <AttendanceStatusPicker value={attState} onChange={setAttState} colAvailableDates={colSummary.availableDates} size="full" />
+            <AttendanceStatusPicker
+              value={attState}
+              onChange={setAttState}
+              colAvailableDates={redeemableOn(colSummary, attDate)}
+              holidayName={attHolidayName}
+              size="full"
+            />
             <div>
               <label htmlFor="att-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Notes</label>
               <input id="att-notes" name="notes" type="text" value={attNotes} onChange={(e) => setAttNotes(e.target.value)} className="w-full px-3 py-2.5 rounded-lg border border-slate-200 focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none" placeholder="Optional..." />
             </div>
             {attError && <p className="text-sm text-red-600">{attError}</p>}
-            <button type="submit" className="w-full py-2.5 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 transition">Save Attendance</button>
+            <button type="submit" className="w-full py-2.5 bg-emerald-600 text-white rounded-lg font-semibold hover:bg-emerald-700 transition">Save Attendance</button>
           </form>
         </Modal>
       )}
@@ -975,8 +1018,8 @@ export default function Hospitals() {
 
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-[2px] flex items-end sm:items-center justify-center z-50 sm:p-4" onClick={onClose}>
+      <div className="bg-white rounded-t-3xl sm:rounded-2xl p-6 w-full sm:max-w-lg shadow-2xl max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-slate-800">{title}</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600">

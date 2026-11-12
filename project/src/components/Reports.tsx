@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { Hospital, MonthlyEntry, Surgery, Patient, Attendance, Payment, RevenueTransaction } from '@/lib/types';
+import { Hospital, MonthlyEntry, Surgery, Patient, Attendance, Payment, RevenueTransaction, GovHoliday } from '@/lib/types';
 import { formatCurrency, formatDate, todayLocalDateStr, monthRangeLocal } from '@/lib/helpers';
 import { getColSummary } from '@/lib/col';
+import { buildColContext, fetchGovHolidays } from '@/lib/holidays';
 import { buildHospitalSummaries, HospitalSummary, SURGERY_CATEGORIES, LEAVE_BREAKDOWN_KEYS, LeaveBreakdown } from '@/lib/hospitalSummary';
 import HospitalDailyTable from './HospitalDailyTable';
 import EditDayModal from './EditDayModal';
@@ -118,6 +119,7 @@ export default function Reports() {
   const [attendance, setAttendance] = useState<Attendance[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [revenueTransactions, setRevenueTransactions] = useState<RevenueTransaction[]>([]);
+  const [holidays, setHolidays] = useState<GovHoliday[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [level, setLevel] = useState<Level>('global');
@@ -132,7 +134,7 @@ export default function Reports() {
   const [endDate, setEndDate] = useState(defaultEnd);
 
   const load = async () => {
-    const [{ data: h }, { data: me }, { data: s }, { data: p }, { data: att }, { data: pay }, { data: rt }] = await Promise.all([
+    const [{ data: h }, { data: me }, { data: s }, { data: p }, { data: att }, { data: pay }, { data: rt }, hol] = await Promise.all([
       supabase.from('hospitals').select('*').order('name'),
       supabase.from('monthly_entries').select('*, hospital:hospitals(*)').order('month', { ascending: false }),
       supabase.from('surgeries').select('*, patient:patients(*)').order('surgery_date', { ascending: false }),
@@ -140,8 +142,10 @@ export default function Reports() {
       supabase.from('attendance').select('*, hospital:hospitals(*)').order('attendance_date', { ascending: false }),
       supabase.from('payments').select('*, patient:patients(*)'),
       supabase.from('revenue_transactions').select('*, hospital:hospitals(*)'),
+      fetchGovHolidays(),
     ]);
     setHospitals(h || []);
+    setHolidays(hol);
     setMonthlyEntries(me || []);
     setSurgeries(s || []);
     setPatients(p || []);
@@ -156,10 +160,11 @@ export default function Reports() {
   const todayStr = todayLocalDateStr(now);
   const rangeStart = startDate || '2000-01-01';
   const rangeEnd = endDate || todayStr;
+  const colContext = useMemo(() => buildColContext(holidays, hospitals), [holidays, hospitals]);
 
   const summaries: HospitalSummary[] = buildHospitalSummaries({
     hospitals, patients, payments, surgeries, monthlyEntries, revenueTransactions, attendance,
-    rangeStart, rangeEnd, todayStr,
+    rangeStart, rangeEnd, todayStr, colContext,
   });
   const activeSummaries = summaries.filter((hs) => hs.hasActivity);
   const selectedHospitalSummary = summaries.find((hs) => hs.hospital.id === selectedHospitalId) || null;
@@ -173,10 +178,10 @@ export default function Reports() {
     LEAVE_BREAKDOWN_KEYS.forEach((k) => { acc[k.key] += hs.leaveBreakdown[k.key]; });
     return acc;
   }, { cl: 0, weekOff: 0, medical: 0, pdo: 0, col: 0, other: 0 } as LeaveBreakdown);
-  const globalCol = getColSummary(attendance);
+  const globalCol = getColSummary(attendance, undefined, { context: colContext, asOf: todayStr });
   const globalFees = activeSummaries.reduce((acc, hs) => ({
-    generated: acc.generated + hs.feesGenerated, received: acc.received + hs.feesReceived, pending: acc.pending + hs.overallPending,
-  }), { generated: 0, received: 0, pending: 0 });
+    generated: acc.generated + hs.feesGenerated, received: acc.received + hs.feesReceived, pending: acc.pending + hs.overallPending, excess: acc.excess + hs.overallExcess,
+  }), { generated: 0, received: 0, pending: 0, excess: 0 });
   const totalSurgeries = activeSummaries.reduce((s, hs) => s + hs.surgeriesCount, 0);
 
   const setQuickRange = (months: number) => {
@@ -223,20 +228,20 @@ export default function Reports() {
       ['Surgeries', totalSurgeries],
       ...LEAVE_BREAKDOWN_KEYS.map((k) => [`Leave — ${k.label}`, globalLeave[k.key]]),
       ['COL Accrued', globalCol.accrued], ['COL Redeemed', globalCol.redeemed], ['COL Available', globalCol.available],
-      ['Fees Generated', globalFees.generated], ['Fees Received', globalFees.received], ['Fees Pending', globalFees.pending],
+      ['Fees Generated', globalFees.generated], ['Fees Received', globalFees.received], ['Fees Pending (monthly tally)', globalFees.pending], ['Excess Paid (monthly tally)', globalFees.excess],
     ];
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summaryRows), 'Summary');
 
     const hospitalRows = [
-      ['Hospital', 'OP', 'IP', 'Opinion', 'Surgeries', 'Present', 'Duties', ...LEAVE_BREAKDOWN_KEYS.map((k) => k.label), 'COL Accrued', 'COL Available', 'Fees Generated', 'Fees Received', 'Pending'],
+      ['Hospital', 'OP', 'IP', 'Opinion', 'Surgeries', 'Present', 'Duties', ...LEAVE_BREAKDOWN_KEYS.map((k) => k.label), 'COL Accrued', 'COL Available', 'Fees Generated', 'Fees Received', 'Pending', 'Excess Paid'],
       ...activeSummaries.map((hs) => [
         hs.hospital.name, hs.opCount, hs.ipCount, hs.opinionCount, hs.surgeriesCount, hs.present, hs.dutyCount,
         ...LEAVE_BREAKDOWN_KEYS.map((k) => hs.leaveBreakdown[k.key]), hs.colAccrued, hs.colAvailable,
-        hs.feesGenerated, hs.feesReceived, hs.overallPending,
+        hs.feesGenerated, hs.feesReceived, hs.overallPending, hs.overallExcess,
       ]),
     ];
     const hospitalSheet = XLSX.utils.aoa_to_sheet(hospitalRows);
-    hospitalSheet['!cols'] = Array(7 + LEAVE_BREAKDOWN_KEYS.length + 5).fill({ wch: 13 });
+    hospitalSheet['!cols'] = Array(7 + LEAVE_BREAKDOWN_KEYS.length + 6).fill({ wch: 13 });
     XLSX.utils.book_append_sheet(wb, hospitalSheet, 'Hospital-wise');
 
     if (level === 'hospital' && selectedHospitalSummary) {
@@ -288,7 +293,7 @@ export default function Reports() {
         ? [{ label: 'Hospital', width: 130 }, ...LEAVE_BREAKDOWN_KEYS.map((k) => ({ label: k.label, width: 55, align: 'right' as const }))]
         : selectedMetric === 'col'
         ? [{ label: 'Hospital', width: 150 }, { label: 'Accrued', width: 70, align: 'right' as const }, { label: 'Redeemed', width: 70, align: 'right' as const }, { label: 'Available', width: 70, align: 'right' as const }]
-        : [{ label: 'Hospital', width: 130 }, { label: 'Generated', width: 80, align: 'right' as const }, { label: 'Received', width: 80, align: 'right' as const }, { label: 'Pending', width: 80, align: 'right' as const }];
+        : [{ label: 'Hospital', width: 120 }, { label: 'Generated', width: 70, align: 'right' as const }, { label: 'Received', width: 70, align: 'right' as const }, { label: 'Pending', width: 70, align: 'right' as const }, { label: 'Excess', width: 70, align: 'right' as const }];
       const rows = activeSummaries.map((hs) => selectedMetric === 'census'
         ? [hs.hospital.name, hs.opCount, hs.ipCount, hs.opinionCount]
         : selectedMetric === 'surgery'
@@ -297,7 +302,7 @@ export default function Reports() {
         ? [hs.hospital.name, ...LEAVE_BREAKDOWN_KEYS.map((k) => hs.leaveBreakdown[k.key])]
         : selectedMetric === 'col'
         ? [hs.hospital.name, hs.colAccrued, hs.colRedeemed, hs.colAvailable]
-        : [hs.hospital.name, formatCurrency(hs.feesGenerated), formatCurrency(hs.feesReceived), formatCurrency(hs.overallPending)]
+        : [hs.hospital.name, formatCurrency(hs.feesGenerated), formatCurrency(hs.feesReceived), formatCurrency(hs.overallPending), formatCurrency(hs.overallExcess)]
       );
       drawTablePdf(doc, { title: `${metricLabel} — Hospital-wise`, subtitle: rangeLabel, columns, rows });
       savePdf(doc, `report-${selectedMetric}`);
@@ -308,14 +313,14 @@ export default function Reports() {
       title: 'Surgical Practice Report — Global Summary',
       subtitle: rangeLabel,
       columns: [
-        { label: 'Hospital', width: 110 }, { label: 'OP', width: 35, align: 'right' }, { label: 'IP', width: 35, align: 'right' }, { label: 'Opinion', width: 50, align: 'right' },
-        { label: 'Surgeries', width: 55, align: 'right' }, { label: 'Leave (CL/WO/Med/PDO/COL/Oth)', width: 110, align: 'right' },
-        { label: 'Fees Gen.', width: 65, align: 'right' }, { label: 'Fees Rec.', width: 65, align: 'right' }, { label: 'Pending', width: 65, align: 'right' },
+        { label: 'Hospital', width: 100 }, { label: 'OP', width: 30, align: 'right' }, { label: 'IP', width: 30, align: 'right' }, { label: 'Opinion', width: 45, align: 'right' },
+        { label: 'Surgeries', width: 50, align: 'right' }, { label: 'Leave (CL/WO/Med/PDO/COL/Oth)', width: 105, align: 'right' },
+        { label: 'Fees Gen.', width: 58, align: 'right' }, { label: 'Fees Rec.', width: 58, align: 'right' }, { label: 'Pending', width: 58, align: 'right' }, { label: 'Excess', width: 58, align: 'right' },
       ],
       rows: activeSummaries.map((hs) => [
         hs.hospital.name, hs.opCount, hs.ipCount, hs.opinionCount, hs.surgeriesCount,
         LEAVE_BREAKDOWN_KEYS.map((k) => hs.leaveBreakdown[k.key]).join('/'),
-        formatCurrency(hs.feesGenerated), formatCurrency(hs.feesReceived), formatCurrency(hs.overallPending),
+        formatCurrency(hs.feesGenerated), formatCurrency(hs.feesReceived), formatCurrency(hs.overallPending), formatCurrency(hs.overallExcess),
       ]),
     });
     savePdf(doc, 'report-global-summary');
@@ -417,10 +422,9 @@ export default function Reports() {
                   </div>
                 )}
                 {m.id === 'fees' && (
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <div><p className="text-sm font-bold text-slate-700">{formatCurrency(globalFees.generated)}</p><p className="text-[11px] text-slate-400">Generated</p></div>
-                    <div><p className="text-sm font-bold text-emerald-600">{formatCurrency(globalFees.received)}</p><p className="text-[11px] text-slate-400">Received</p></div>
+                  <div className="grid grid-cols-2 gap-2 text-center">
                     <div><p className={`text-sm font-bold ${globalFees.pending > 0 ? 'text-red-600' : 'text-slate-500'}`}>{formatCurrency(globalFees.pending)}</p><p className="text-[11px] text-slate-400">Pending</p></div>
+                    <div><p className={`text-sm font-bold ${globalFees.excess > 0 ? 'text-emerald-700' : 'text-slate-500'}`}>{formatCurrency(globalFees.excess)}</p><p className="text-[11px] text-slate-400">Excess paid</p></div>
                   </div>
                 )}
               </button>
@@ -470,10 +474,11 @@ export default function Reports() {
                   </div>
                 )}
                 {selectedMetric === 'fees' && (
-                  <div className="grid grid-cols-3 gap-2 text-center">
+                  <div className="grid grid-cols-4 gap-2 text-center">
                     <div><p className="text-sm font-bold text-slate-700">{formatCurrency(hs.feesGenerated)}</p><p className="text-[9px] text-slate-400">Generated</p></div>
                     <div><p className="text-sm font-bold text-emerald-600">{formatCurrency(hs.feesReceived)}</p><p className="text-[9px] text-slate-400">Received</p></div>
                     <div><p className={`text-sm font-bold ${hs.overallPending > 0 ? 'text-red-600' : 'text-slate-500'}`}>{formatCurrency(hs.overallPending)}</p><p className="text-[9px] text-slate-400">Pending</p></div>
+                    <div><p className={`text-sm font-bold ${hs.overallExcess > 0 ? 'text-emerald-700' : 'text-slate-500'}`}>{formatCurrency(hs.overallExcess)}</p><p className="text-[9px] text-slate-400">Excess</p></div>
                   </div>
                 )}
               </button>
@@ -499,6 +504,7 @@ export default function Reports() {
           existingEntry={monthlyEntries.find((me) => me.hospital_id === editDayModal.hospitalId && (me.entry_date || me.month).substring(0, 10) === editDayModal.date) || null}
           existingAttendance={attendance.find((a) => a.hospital_id === editDayModal.hospitalId && a.attendance_date === editDayModal.date) || null}
           attendance={attendance}
+          colContext={colContext}
           userId={user!.id}
           onClose={() => setEditDayModal(null)}
           onSaved={() => { setEditDayModal(null); load(); }}

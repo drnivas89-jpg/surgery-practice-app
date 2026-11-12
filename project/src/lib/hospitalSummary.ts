@@ -1,5 +1,8 @@
 import { Attendance, Hospital, MonthlyEntry, Patient, Payment, RevenueTransaction, Surgery } from './types';
 import { getColSummary } from './col';
+import { ColContext, EMPTY_COL_CONTEXT } from './holidays';
+import { dutyKindOf, DUTY_KIND_OPTIONS } from './attendance';
+import { buildMonthlyFeeTally, sumFeeTally } from './fees';
 
 export const SURGERY_CATEGORIES = ['Major', 'Minor', 'Bedside', 'Endoscopy', 'Others'] as const;
 export type SurgeryCategory = typeof SURGERY_CATEGORIES[number];
@@ -47,11 +50,23 @@ export function classifyLeave(a: Attendance): keyof LeaveBreakdown {
   return 'other';
 }
 
+// Date-wise log label: 'Duty' (regular), '24 Hrs Duty', 'Extra Duty',
+// 'COL Duty', or 'Leave (<type>)'.
+export function attendanceLabel(a: Attendance): string {
+  const kind = dutyKindOf(a);
+  if (!kind) return `Leave (${LEAVE_BREAKDOWN_KEYS.find((k) => k.key === classifyLeave(a))?.label || 'Other'})`;
+  if (kind === 'regular') return 'Duty';
+  if (kind === 'col') return 'COL Duty';
+  return DUTY_KIND_OPTIONS.find((o) => o.value === kind)!.label;
+}
+
 export interface DailyRow {
   date: string;
   hospitalName: string;
   attendanceStatusLabel: string | null;
   colReason: string | null;
+  // Government holiday name (government hospitals only).
+  holidayName: string | null;
   opCount: number;
   ipCount: number;
   opinionCount: number;
@@ -69,7 +84,11 @@ export interface HospitalSummary {
   opCount: number; ipCount: number; opinionCount: number;
   surgeriesCount: number;
   surgeryCategories: Record<SurgeryCategory, number>;
-  feesGenerated: number; feesReceived: number; overallPending: number;
+  feesGenerated: number; feesReceived: number;
+  // Tallied per calendar month, all months up to today: month shortfalls
+  // add to pending, month overpayments add to excess — never netted.
+  overallPending: number; overallExcess: number;
+  // Days on duty of any kind (regular, 24 hrs, extra, COL).
   present: number;
   dutyCount: number;
   dutyDates: string[];
@@ -78,6 +97,7 @@ export interface HospitalSummary {
   colAccrued: number;
   colRedeemed: number;
   colAvailable: number;
+  colWasted: number;
   missingEntryDates: string[];
   days: DailyRow[];
   hasActivity: boolean;
@@ -116,6 +136,8 @@ export interface BuildHospitalSummariesParams {
   rangeEnd: string;   // yyyy-mm-dd, inclusive
   /** All-time-to-date fields (pending fees, COL) ignore the range and use these full datasets directly. */
   todayStr: string;
+  /** Government holidays + government hospitals, for COL auto-credits and holiday labels. */
+  colContext?: ColContext;
 }
 
 // Single source of truth for per-hospital, per-date aggregation — powers
@@ -126,6 +148,8 @@ export interface BuildHospitalSummariesParams {
 export function buildHospitalSummaries(params: BuildHospitalSummariesParams): HospitalSummary[] {
   const { hospitals, patients, payments, surgeries, monthlyEntries, attendance, rangeStart, rangeEnd, todayStr } = params;
   const revenueTransactions = params.revenueTransactions || [];
+  const colContext = params.colContext || EMPTY_COL_CONTEXT;
+  const feeTally = buildMonthlyFeeTally({ patients, payments, monthlyEntries, revenueTransactions, upTo: todayStr });
 
   const patientById = new Map(patients.map((p) => [p.id, p]));
 
@@ -178,26 +202,14 @@ export function buildHospitalSummaries(params: BuildHospitalSummariesParams): Ho
       hospEntries.reduce((s, me) => s + me.fees_received, 0) +
       hospRevenueTxns.reduce((s, rt) => s + rt.amount_received, 0);
 
-    // Pending is all-time-to-date, not limited to the selected range — an
-    // outstanding balance doesn't reset when you change the filter.
-    const allHospPatients = patients.filter((p) => p.hospital_id === h.id);
-    const allHospPayments = payments.filter((pay) => pay.hospital_id === h.id);
-    const allHospEntries = monthlyEntries.filter(
-      (me) => me.hospital_id === h.id && (me.entry_date || me.month).substring(0, 10) <= todayStr
+    // Pending/excess are all-time-to-date, not limited to the selected range
+    // — an outstanding balance doesn't reset when you change the filter.
+    const { pending: overallPending, excess: overallExcess } = sumFeeTally(
+      feeTally.filter((t) => t.hospitalId === h.id)
     );
-    const allHospRevenueTxns = revenueTransactions.filter((rt) => rt.hospital_id === h.id && rt.entry_date <= todayStr);
-    const overallFees =
-      allHospPatients.reduce((s, p) => s + (p.fees || 0), 0) +
-      allHospEntries.reduce((s, me) => s + me.fees_generated, 0) +
-      allHospRevenueTxns.reduce((s, rt) => s + rt.amount_generated, 0);
-    const overallReceived =
-      allHospPayments.reduce((s, p) => s + p.amount, 0) +
-      allHospEntries.reduce((s, me) => s + me.fees_received, 0) +
-      allHospRevenueTxns.reduce((s, rt) => s + rt.amount_received, 0);
-    const overallPending = overallFees - overallReceived;
 
     const hospAtt = rangeAttendance.filter((a) => a.hospital_id === h.id);
-    const present = hospAtt.filter((a) => a.status === 'present').length;
+    const present = hospAtt.filter((a) => a.status !== 'leave').length;
     const duties = hospAtt.filter((a) => a.status === 'present' && a.duty_type === 'duty');
     const leaves = hospAtt.filter((a) => a.status === 'leave');
     const extraDuties = hospAtt.filter((a) => a.status === 'extra_duty');
@@ -207,7 +219,8 @@ export function buildHospitalSummaries(params: BuildHospitalSummariesParams): Ho
 
     // COL is a running balance, not reset by the range filter — scoped to
     // this hospital only, since COL is hospital-strict.
-    const hospColSummary = getColSummary(attendance, h.id);
+    const hospColSummary = getColSummary(attendance, h.id, { context: colContext, asOf: todayStr });
+    const isGovernment = colContext.governmentHospitalIds.has(h.id);
 
     const dayMap = new Map<string, { date: string; attendance: Attendance[]; patients: Patient[]; surgeries: Surgery[]; payments: Payment[]; revenueTxns: RevenueTransaction[]; entry: MonthlyEntry | null }>();
     const ensureDay = (date: string) => {
@@ -229,16 +242,9 @@ export function buildHospitalSummaries(params: BuildHospitalSummariesParams): Ho
       .sort((a, b) => b.date.localeCompare(a.date))
       .map((d) => {
         const attRow = d.attendance[0] || null;
-        const attendanceStatusLabel = attRow
-          ? attRow.status === 'present'
-            ? (attRow.duty_type === 'duty' ? '24 Hrs Duty' : 'Present')
-            : attRow.status === 'leave'
-            ? `Leave (${LEAVE_BREAKDOWN_KEYS.find((k) => k.key === classifyLeave(attRow))?.label || 'Other'})`
-            : 'Extra Duty'
-          : null;
-        const colReason = attRow && attRow.status === 'extra_duty' && (attRow.extra_duty_type || '').toLowerCase() === 'col'
-          ? attRow.col_reason
-          : null;
+        const attendanceStatusLabel = attRow ? attendanceLabel(attRow) : null;
+        const colReason = attRow && dutyKindOf(attRow) === 'col' ? attRow.col_reason : null;
+        const holidayName = isGovernment ? colContext.holidayNameOn(d.date) : null;
         const dayOp = (d.entry?.op_patients || 0) + d.revenueTxns.reduce((s, rt) => s + rt.op_count, 0);
         const dayIp = d.patients.filter((p) => p.patient_type === 'ip').length + d.revenueTxns.reduce((s, rt) => s + rt.ip_count, 0);
         const dayOpinion = (d.entry?.opinion_patients || 0) + d.revenueTxns.reduce((s, rt) => s + rt.opinion_count, 0);
@@ -248,12 +254,13 @@ export function buildHospitalSummaries(params: BuildHospitalSummariesParams): Ho
         const dayFeesReceived = (d.entry?.fees_received || 0) + d.payments.reduce((s, p) => s + p.amount, 0)
           + d.revenueTxns.reduce((s, rt) => s + rt.amount_received, 0);
         const hasAnyRecord = d.attendance.length > 0 || !!d.entry || d.patients.length > 0 || d.surgeries.length > 0 || d.payments.length > 0 || d.revenueTxns.length > 0;
-        const isZeroActivity = attendanceStatusLabel === 'Present' && dayOp === 0 && dayIp === 0 && dayOpinion === 0;
+        const isZeroActivity = attendanceStatusLabel === 'Duty' && dayOp === 0 && dayIp === 0 && dayOpinion === 0;
         return {
           date: d.date,
           hospitalName: h.name,
           attendanceStatusLabel,
           colReason,
+          holidayName,
           opCount: dayOp,
           ipCount: dayIp,
           opinionCount: dayOpinion,
@@ -261,7 +268,7 @@ export function buildHospitalSummaries(params: BuildHospitalSummariesParams): Ho
           feesGenerated: dayFeesGenerated,
           feesReceived: dayFeesReceived,
           pendingFees: dayFeesGenerated - dayFeesReceived,
-          isMissing: !hasAnyRecord,
+          isMissing: !hasAnyRecord && !holidayName,
           isZeroActivity,
           hasAnyRecord,
         };
@@ -274,7 +281,7 @@ export function buildHospitalSummaries(params: BuildHospitalSummariesParams): Ho
       opCount, ipCount, opinionCount,
       surgeriesCount: hospSurgeries.length,
       surgeryCategories,
-      feesGenerated, feesReceived, overallPending,
+      feesGenerated, feesReceived, overallPending, overallExcess,
       present,
       dutyCount: duties.length,
       dutyDates: duties.map((d) => d.attendance_date),
@@ -283,11 +290,12 @@ export function buildHospitalSummaries(params: BuildHospitalSummariesParams): Ho
       colAccrued: hospColSummary.accrued,
       colRedeemed: hospColSummary.redeemed,
       colAvailable: hospColSummary.available,
+      colWasted: hospColSummary.wasted,
       missingEntryDates,
       days,
       hasActivity:
         opCount > 0 || ipCount > 0 || opinionCount > 0 || hospSurgeries.length > 0 || feesGenerated > 0 ||
-        present > 0 || leaves.length > 0 || extraDuties.length > 0 || overallPending !== 0,
+        present > 0 || leaves.length > 0 || extraDuties.length > 0 || overallPending > 0 || overallExcess > 0,
     };
   });
 }
