@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { Hospital, Patient, ProcedureCategory, Surgery, FollowUp } from '@/lib/types';
-import { generateUniquePatientId, uploadImage, getImageUrl, todayLocalDateStr } from '@/lib/helpers';
+import { generateUniquePatientId, uploadImage, getImageUrl, todayLocalDateStr, isHpeAwaiting } from '@/lib/helpers';
 import { ArrowLeft, Save, AlertCircle, Phone, ImagePlus, X, FlaskConical, FileText, UserRound, Activity } from 'lucide-react';
 
 const CASE_CATEGORIES: { value: ProcedureCategory; label: string; hint: string; active: string }[] = [
@@ -46,7 +46,8 @@ export default function SurgicalCaseForm({ hospitals, editPatient, defaultHospit
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
 
   // HPE (optional)
-  const [hpeEnabled, setHpeEnabled] = useState(false);
+  const [hpeStatus, setHpeStatus] = useState<'none' | 'awaiting' | 'received'>('none');
+  const hpeEnabled = hpeStatus !== 'none';
   const [hpeNumber, setHpeNumber] = useState('');
   const [hpeReport, setHpeReport] = useState('');
   const [existingHpeImages, setExistingHpeImages] = useState<string[]>([]);
@@ -80,7 +81,7 @@ export default function SurgicalCaseForm({ hospitals, editPatient, defaultHospit
       }
       if (f) {
         setExistingHpe(f);
-        setHpeEnabled(true);
+        setHpeStatus(isHpeAwaiting(f) ? 'awaiting' : 'received');
         setHpeNumber(f.report_number || '');
         setHpeReport(f.findings || '');
         setExistingHpeImages(f.report_image_paths || []);
@@ -130,11 +131,15 @@ export default function SurgicalCaseForm({ hospitals, editPatient, defaultHospit
     if (!surgeryDate) { setError('Please enter the date of surgery.'); return; }
     if (!category) { setError('Please choose Major, Minor or Bedside.'); return; }
     if (!procedureName.trim()) { setError('Please enter the procedure name.'); return; }
+    if (hpeStatus === 'received' && !hpeReport.trim() && existingHpeImages.length === 0 && newHpeImages.length === 0) {
+      setError('Enter the HPE report or attach a scan — or choose "Sent – awaiting report".');
+      return;
+    }
 
     setSaving(true);
     try {
       const imagePaths = [...existingImages, ...(await uploadAll(newImages, 'surgery'))];
-      const hpeImagePaths = hpeEnabled ? [...existingHpeImages, ...(await uploadAll(newHpeImages, 'followup'))] : [];
+      const hpeImagePaths = hpeStatus === 'received' ? [...existingHpeImages, ...(await uploadAll(newHpeImages, 'followup'))] : [];
 
       const patientPayload = {
         hospital_id: hospitalId,
@@ -191,7 +196,7 @@ export default function SurgicalCaseForm({ hospitals, editPatient, defaultHospit
         const hpePayload = {
           type: 'biopsy' as const,
           report_number: hpeNumber.trim(),
-          findings: hpeReport,
+          findings: hpeStatus === 'received' ? hpeReport : '',
           year: parseInt(surgeryDate.substring(0, 4)),
           report_image_paths: hpeImagePaths,
         };
@@ -341,19 +346,37 @@ export default function SurgicalCaseForm({ hospitals, editPatient, defaultHospit
         </Section>
 
         <Section icon={FlaskConical} title="HPE Report" optional>
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={hpeEnabled}
-              onChange={(e) => setHpeEnabled(e.target.checked)}
-              className="w-4 h-4 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
-            />
-            <span className="text-sm font-medium text-slate-700">Add HPE report</span>
-          </label>
-          {!hpeEnabled && existingHpe && (
-            <p className="text-xs text-amber-600">The saved HPE report will be removed when you save.</p>
+          <div className="grid grid-cols-3 gap-2">
+            {([['none', 'Not sent'], ['awaiting', 'Sent – awaiting'], ['received', 'Report received']] as const).map(([val, label]) => (
+              <button
+                key={val}
+                type="button"
+                onClick={() => setHpeStatus(val)}
+                aria-pressed={hpeStatus === val}
+                className={`py-2.5 px-2 rounded-lg text-xs sm:text-sm font-semibold transition ${
+                  hpeStatus === val
+                    ? val === 'awaiting' ? 'bg-amber-500 text-white' : val === 'received' ? 'bg-violet-600 text-white' : 'bg-slate-700 text-white'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {hpeStatus === 'none' && existingHpe && (
+            <p className="text-xs text-amber-600">The saved HPE record will be removed when you save.</p>
           )}
-          {hpeEnabled && (
+          {hpeStatus === 'awaiting' && existingHpe && !isHpeAwaiting(existingHpe) && (
+            <p className="text-xs text-amber-600">The saved report text and scans will be cleared when you save.</p>
+          )}
+          {hpeStatus === 'awaiting' && (
+            <div>
+              <label htmlFor="sc-hpe-number-a" className="form-label">HPE / lab reference number (optional)</label>
+              <input id="sc-hpe-number-a" name="hpeNumber" type="text" value={hpeNumber} onChange={(e) => setHpeNumber(e.target.value)} className="form-input" />
+              <p className="text-xs text-slate-400 mt-1.5">This case will show under "Awaiting HPE" until you add the report.</p>
+            </div>
+          )}
+          {hpeStatus === 'received' && (
             <div className="space-y-4">
               <div>
                 <label htmlFor="sc-hpe-number" className="form-label">HPE Number</label>

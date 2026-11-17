@@ -5,6 +5,7 @@ import { Patient, Surgery, FollowUp, FollowUpVisit, Payment, SurgeryType, Invest
 import { formatDate, formatCurrency, uploadImage, getImageUrl, ensurePresentAttendance, todayLocalDateStr, isSurgicalCase } from '@/lib/helpers';
 import PrescriptionTable, { DEFAULT_PRESCRIPTION } from './PrescriptionTable';
 import PresentDutyPrompt from './PresentDutyPrompt';
+import ImageGallery, { GalleryImage } from './ImageGallery';
 import {
   ArrowLeft, Pencil, Activity, UserRound, FlaskConical, IndianRupee, Plus, X,
   Trash2, Settings, TestTube, HeartPulse, ClipboardCheck, MessageSquare, Paperclip, Wrench,
@@ -54,6 +55,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   const [showTypeManager, setShowTypeManager] = useState(false);
   const [newTypeName, setNewTypeName] = useState('');
   const [newAttendanceId, setNewAttendanceId] = useState<string | null>(null);
+  const [gallery, setGallery] = useState<{ images: GalleryImage[]; start: number } | null>(null);
 
   // Surgery form
   const [showSurgeryForm, setShowSurgeryForm] = useState(false);
@@ -688,9 +690,25 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
                       <p className="text-xs text-slate-400 mb-1.5">Surgery Images</p>
                       <div className="flex gap-2 flex-wrap">
                         {s.image_paths.map((path, i) => imageUrls[path] ? (
-                          <a key={i} href={imageUrls[path]} target="_blank" rel="noopener noreferrer">
+                          <button
+                            key={i}
+                            type="button"
+                            onClick={() => {
+                              const paths = s.image_paths.filter((p) => imageUrls[p]);
+                              const label = [patient.patient_name, s.procedure_name, s.surgery_date ? formatDate(s.surgery_date) : ''].filter(Boolean).join(' · ');
+                              setGallery({
+                                images: paths.map((p, n) => ({
+                                  url: imageUrls[p],
+                                  caption: `Photo ${n + 1} — ${label}`,
+                                  fileName: `${(s.procedure_name || 'case').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${n + 1}.${p.split('.').pop() || 'jpg'}`,
+                                })),
+                                start: Math.max(0, paths.indexOf(path)),
+                              });
+                            }}
+                            aria-label={`Open photo ${i + 1}`}
+                          >
                             <img src={imageUrls[path]} alt={`Surgery ${i + 1}`} className="w-20 h-20 object-cover rounded-lg border border-slate-200 hover:opacity-80 transition" />
-                          </a>
+                          </button>
                         ) : null)}
                       </div>
                     </div>
@@ -1142,6 +1160,8 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
           </form>
         </Modal>
       )}
+
+      {gallery && <ImageGallery images={gallery.images} startIndex={gallery.start} onClose={() => setGallery(null)} />}
 
       {newAttendanceId && (
         <PresentDutyPrompt

@@ -4,7 +4,8 @@ import { useAuth } from '@/lib/auth';
 import { Patient, Hospital, Surgery, ClassEntry, Publication, Investigation, ProcedureCategory } from '@/lib/types';
 import { formatDate, getImageUrl } from '@/lib/helpers';
 import { SURGERY_CATEGORIES, categorizeSurgery as categorize, SurgeryCategory } from '@/lib/hospitalSummary';
-import { Activity, Download, Filter, X, GraduationCap, BookOpen, Stethoscope, Pencil, RefreshCw } from 'lucide-react';
+import { Activity, Download, Filter, X, GraduationCap, BookOpen, Stethoscope, Pencil, RefreshCw, FileSpreadsheet } from 'lucide-react';
+import { exportLogbookExcel, HpeInfo } from '@/lib/logbookExport';
 import jsPDF from 'jspdf';
 
 const MONTHS = [
@@ -88,6 +89,8 @@ export default function SurgicalLogbook() {
   const [yearFilter, setYearFilter] = useState('');
   const [hospitalFilter, setHospitalFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [hpeByPatient, setHpeByPatient] = useState<Map<string, HpeInfo>>(new Map());
 
   const [doctorName, setDoctorName] = useState('');
   const [qualifications, setQualifications] = useState('');
@@ -104,6 +107,8 @@ export default function SurgicalLogbook() {
       supabase.from('publications').select('*').order('year', { ascending: false }),
       supabase.from('investigations').select('*'),
     ]);
+    const { data: hpe } = await supabase.from('follow_ups').select('patient_id, report_number, findings, report_image_paths').eq('type', 'biopsy');
+    setHpeByPatient(new Map((hpe || []).map((h: HpeInfo & { patient_id: string }) => [h.patient_id, h])));
     const patientMap = new Map<string, Patient>();
     (patients || []).forEach((p: Patient) => patientMap.set(p.id, p));
     const hospitalMap = new Map<string, Hospital>();
@@ -175,6 +180,7 @@ export default function SurgicalLogbook() {
     if (typeFilter) {
       if (r.surgery.surgery_type !== typeFilter) return false;
     }
+    if (categoryFilter && categorize(r.surgery) !== categoryFilter) return false;
     return true;
   });
 
@@ -188,9 +194,10 @@ export default function SurgicalLogbook() {
   if (yearFilter) activeFilters.push(`Year: ${yearFilter}`);
   if (hospitalFilter) activeFilters.push(`Hospital: ${availableHospitals.find((h) => h.id === hospitalFilter)?.name || hospitalFilter}`);
   if (typeFilter) activeFilters.push(`Type: ${typeFilter}`);
+  if (categoryFilter) activeFilters.push(`Category: ${categoryFilter}`);
 
   const clearFilters = () => {
-    setMonthFilter(''); setYearFilter(''); setHospitalFilter(''); setTypeFilter('');
+    setMonthFilter(''); setYearFilter(''); setHospitalFilter(''); setTypeFilter(''); setCategoryFilter('');
   };
 
   const handleExportPdf = async () => {
@@ -627,6 +634,14 @@ export default function SurgicalLogbook() {
           <h1 className="text-2xl font-bold text-slate-800">Surgical Logbook</h1>
           <p className="text-slate-500 text-sm mt-0.5">Date-wise case details of all surgeries — printable as a book with filters</p>
         </div>
+        <div className="flex gap-2 flex-wrap">
+        <button
+          onClick={() => exportLogbookExcel(filtered, hpeByPatient, { doctorName, qualifications })}
+          disabled={filtered.length === 0}
+          className="btn-secondary"
+        >
+          <FileSpreadsheet className="w-4 h-4 text-emerald-600" /> Export Excel
+        </button>
         <button
           onClick={handleExportPdf}
           disabled={exporting || filtered.length === 0}
@@ -634,6 +649,7 @@ export default function SurgicalLogbook() {
         >
           <Download className="w-4 h-4" /> {exporting ? 'Generating...' : 'Export Logbook (PDF)'}
         </button>
+        </div>
       </div>
 
       {/* Cover page details */}
@@ -656,13 +672,13 @@ export default function SurgicalLogbook() {
         <div className="flex items-center gap-2 mb-3">
           <Filter className="w-4 h-4 text-slate-400" />
           <span className="text-sm font-medium text-slate-600">Filter Records</span>
-          {(monthFilter || yearFilter || hospitalFilter || typeFilter) && (
+          {(monthFilter || yearFilter || hospitalFilter || typeFilter || categoryFilter) && (
             <button onClick={clearFilters} className="ml-auto flex items-center gap-1 text-xs text-slate-400 hover:text-red-500 transition">
               <X className="w-3.5 h-3.5" /> Clear all
             </button>
           )}
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
           <div>
             <label htmlFor="log-filter-month" className="block text-xs font-medium text-slate-500 mb-1">Month</label>
             <select id="log-filter-month" name="month" value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
@@ -689,6 +705,13 @@ export default function SurgicalLogbook() {
             <select id="log-filter-type" name="surgeryType" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
               <option value="">All types</option>
               {availableTypes.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="log-filter-category" className="block text-xs font-medium text-slate-500 mb-1">Major / Minor / Bedside</label>
+            <select id="log-filter-category" name="category" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-500">
+              <option value="">All categories</option>
+              {SURGERY_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
         </div>

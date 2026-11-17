@@ -9,7 +9,7 @@ import { buildHospitalSummaries, LEAVE_BREAKDOWN_KEYS } from '@/lib/hospitalSumm
 import { AttendanceChoiceState, defaultAttendanceChoiceState, validateAttendanceChoice, buildAttendanceFields } from '@/lib/attendance';
 import {
   Building2, Plus, Trash2, X, Calendar, Pencil, Clock, Search,
-  UserRound, Stethoscope, ArrowRight, GraduationCap, Upload, Download, ArrowLeft, ChevronLeft, ChevronRight, Award, Landmark,
+  UserRound, Stethoscope, ArrowRight, GraduationCap, Upload, Download, ArrowLeft, ChevronLeft, ChevronRight, Award, Landmark, CalendarCheck2,
 } from 'lucide-react';
 import PatientForm from './PatientForm';
 import PatientRegistrationWizard from './PatientRegistrationWizard';
@@ -19,6 +19,7 @@ import EditDayModal from './EditDayModal';
 import AttendanceStatusPicker from './AttendanceStatusPicker';
 import PresentDutyPrompt from './PresentDutyPrompt';
 import GovHolidays from './GovHolidays';
+import MissingDaysModal from './MissingDaysModal';
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -40,6 +41,7 @@ export default function Hospitals() {
   const [showAttendance, setShowAttendance] = useState(false);
   const [name, setName] = useState('');
   const [isGovernment, setIsGovernment] = useState(false);
+  const [showMissing, setShowMissing] = useState(false);
   const [holidays, setHolidays] = useState<GovHoliday[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -462,6 +464,10 @@ export default function Hospitals() {
             <Clock className="w-4 h-4" />
             Add Attendance
           </button>
+          <button onClick={() => setShowMissing(true)} disabled={hospitals.length === 0} className="btn-secondary">
+            <CalendarCheck2 className="w-4 h-4" />
+            Fill missing days
+          </button>
           <button
             onClick={() => { resetEntryForm(); setShowEntry(true); }}
             disabled={hospitals.length === 0}
@@ -770,6 +776,17 @@ export default function Hospitals() {
             onDeleteDate={(date) => handleDeleteDay(selectedHospitalSummary.hospital.id, date)}
           />
         </div>
+      )}
+
+      {showMissing && user && (
+        <MissingDaysModal
+          hospitals={hospitals}
+          attendance={attendance}
+          colContext={colContext}
+          userId={user.id}
+          onClose={() => setShowMissing(false)}
+          onSaved={load}
+        />
       )}
 
       {newAttendance && (

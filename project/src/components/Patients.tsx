@@ -1,16 +1,17 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Patient, Hospital, Surgery, FollowUp } from '@/lib/types';
-import { formatDate, isSurgicalCase } from '@/lib/helpers';
-import { ClipboardList, Plus, Search, Trash2, Pencil, Download, FlaskConical } from 'lucide-react';
+import { formatDate, isSurgicalCase, isHpeAwaiting } from '@/lib/helpers';
+import { ClipboardList, Plus, Search, Trash2, Pencil, Download, FlaskConical, List, BarChart3 } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import PatientForm from './PatientForm';
 import SurgicalCaseForm from './SurgicalCaseForm';
 import PatientDetail from './PatientDetail';
+import CaseInsights, { InsightCase } from './CaseInsights';
 
 type CaseRow = Patient & {
-  surgeries: Pick<Surgery, 'procedure_name' | 'procedure_category' | 'surgery_date' | 'procedure_notes' | 'role' | 'created_at'>[];
-  follow_ups: Pick<FollowUp, 'type' | 'report_number' | 'findings'>[];
+  surgeries: Pick<Surgery, 'procedure_name' | 'procedure_category' | 'surgery_date' | 'procedure_notes' | 'role' | 'outcome' | 'created_at'>[];
+  follow_ups: Pick<FollowUp, 'type' | 'report_number' | 'findings' | 'report_image_paths'>[];
 };
 
 const CATEGORY_BADGE: Record<string, string> = {
@@ -24,12 +25,14 @@ const primarySurgery = (p: CaseRow) =>
   [...(p.surgeries || [])].sort((a, b) => a.created_at.localeCompare(b.created_at))[0];
 const hpeReport = (p: CaseRow) => (p.follow_ups || []).find((f) => f.type === 'biopsy');
 
-export default function Patients() {
+export default function Patients({ focusPatientId, onFocusHandled }: { focusPatientId?: string | null; onFocusHandled?: () => void } = {}) {
   const [patients, setPatients] = useState<CaseRow[]>([]);
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showOlder, setShowOlder] = useState(false);
+  const [awaitingOnly, setAwaitingOnly] = useState(false);
+  const [tab, setTab] = useState<'list' | 'insights'>('list');
   const [showForm, setShowForm] = useState(false);
   const [editPatient, setEditPatient] = useState<Patient | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -38,7 +41,7 @@ export default function Patients() {
     const [{ data: p }, { data: h }] = await Promise.all([
       supabase
         .from('patients')
-        .select('*, hospital:hospitals(*), surgeries(procedure_name, procedure_category, surgery_date, procedure_notes, role, created_at), follow_ups(type, report_number, findings)')
+        .select('*, hospital:hospitals(*), surgeries(procedure_name, procedure_category, surgery_date, procedure_notes, role, outcome, created_at), follow_ups(type, report_number, findings, report_image_paths)')
         .order('surgery_date', { ascending: false, nullsFirst: false })
         .order('created_at', { ascending: false }),
       supabase.from('hospitals').select('*').order('name'),
@@ -52,9 +55,19 @@ export default function Patients() {
     load();
   }, []);
 
+  // Opened from global search: jump straight to that patient's record.
+  useEffect(() => {
+    if (!focusPatientId) return;
+    setShowForm(false);
+    setSelectedId(focusPatientId);
+    onFocusHandled?.();
+  }, [focusPatientId, onFocusHandled]);
+
   const cases = patients.filter(isSurgicalCase);
   const olderCount = patients.length - cases.length;
-  const visible = showOlder ? patients : cases;
+  const isAwaiting = (p: CaseRow) => { const h = hpeReport(p); return !!h && isHpeAwaiting(h); };
+  const awaitingCount = cases.filter(isAwaiting).length;
+  const visible = (showOlder ? patients : cases).filter((p) => !awaitingOnly || isAwaiting(p));
 
   const filtered = visible.filter((p) => {
     const q = search.toLowerCase();
@@ -69,6 +82,21 @@ export default function Patients() {
     );
   });
 
+  const insightCases: InsightCase[] = (showOlder ? patients : cases).flatMap((p) => {
+    const s = primarySurgery(p);
+    if (!s) return [];
+    const hpe = hpeReport(p);
+    return [{
+      date: (s.surgery_date || p.surgery_date || '').substring(0, 10) || null,
+      category: s.procedure_category || '',
+      procedure: s.procedure_name || '',
+      hospital: p.hospital?.name || '',
+      role: s.role === 'assisted_by_me' ? 'assisted' : 'performed',
+      outcome: s.outcome || '',
+      hpe: hpe ? (isHpeAwaiting(hpe) ? 'awaiting' : 'received') : 'none',
+    }];
+  });
+
   const countBy = (cat: string) => filtered.filter((p) => primarySurgery(p)?.procedure_category === cat).length;
 
   const handleDeletePatient = async (id: string, name: string) => {
@@ -80,7 +108,7 @@ export default function Patients() {
   const handleDownloadAll = () => {
     const headers = [
       'Case ID', 'Name', 'Age', 'Sex', 'Mobile Number', 'Hospital', 'Date of Surgery',
-      'Type of Surgery', 'Procedure', 'Role', 'Diagnosis', 'Operative Notes', 'HPE Number', 'HPE Report',
+      'Type of Surgery', 'Procedure', 'Role', 'Diagnosis', 'Operative Notes', 'HPE Status', 'HPE Number', 'HPE Report',
     ];
     const rows = filtered.map((p) => {
       const s = primarySurgery(p);
@@ -89,7 +117,8 @@ export default function Patients() {
         p.unique_id, p.patient_name, p.age ?? '', p.sex || '', p.mobile_number || '', p.hospital?.name || '',
         s?.surgery_date || p.surgery_date || '', s?.procedure_category || '', s?.procedure_name || '',
         s ? (s.role === 'assisted_by_me' ? 'Assisted' : 'Done by me') : '',
-        p.diagnosis || '', s?.procedure_notes || '', hpe?.report_number || '', hpe?.findings || '',
+        p.diagnosis || '', s?.procedure_notes || '', hpe ? (isHpeAwaiting(hpe) ? 'Awaiting' : 'Received') : 'Not sent',
+        hpe?.report_number || '', hpe?.findings || '',
       ];
     });
     const escapeCsv = (v: unknown) => {
@@ -186,6 +215,23 @@ export default function Patients() {
         </div>
       )}
 
+      <div className="inline-flex bg-white border border-slate-200 rounded-xl p-1 shadow-sm">
+        {([['list', 'Cases', List], ['insights', 'Insights', BarChart3]] as const).map(([id, label, Icon]) => (
+          <button
+            key={id}
+            onClick={() => setTab(id)}
+            aria-pressed={tab === id}
+            className={`inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-semibold transition ${tab === id ? 'bg-sky-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+          >
+            <Icon className="w-4 h-4" /> {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'insights' ? (
+        <CaseInsights cases={insightCases} />
+      ) : (<>
+
       <div className="flex items-center gap-3 flex-wrap">
         <div className="relative flex-1 min-w-[16rem]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -197,6 +243,15 @@ export default function Patients() {
             className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-slate-200 bg-white focus:border-sky-400 focus:ring-2 focus:ring-sky-100 outline-none transition"
           />
         </div>
+        {awaitingCount > 0 && (
+          <button
+            onClick={() => setAwaitingOnly(!awaitingOnly)}
+            aria-pressed={awaitingOnly}
+            className={`inline-flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-lg transition ${awaitingOnly ? 'bg-amber-500 text-white' : 'bg-amber-50 text-amber-800 hover:bg-amber-100'}`}
+          >
+            <FlaskConical className="w-4 h-4" /> Awaiting HPE ({awaitingCount})
+          </button>
+        )}
         {olderCount > 0 && (
           <label className="flex items-center gap-2 text-sm text-slate-500 cursor-pointer select-none">
             <input type="checkbox" checked={showOlder} onChange={(e) => setShowOlder(e.target.checked)} className="w-4 h-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500" />
@@ -275,9 +330,13 @@ export default function Patients() {
                       </td>
                       <td className="px-4 py-3 text-slate-500">{p.hospital?.name || '—'}</td>
                       <td className="px-4 py-3">
-                        {hpe ? (
+                        {hpe && isHpeAwaiting(hpe) ? (
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-800 bg-amber-100 px-2 py-0.5 rounded" title="Specimen sent — report awaited">
+                            <FlaskConical className="w-3 h-3" /> Awaiting
+                          </span>
+                        ) : hpe ? (
                           <span className="inline-flex items-center gap-1 text-xs font-medium text-violet-700 bg-violet-50 px-2 py-0.5 rounded" title={hpe.findings || undefined}>
-                            <FlaskConical className="w-3 h-3" /> {hpe.report_number || 'Yes'}
+                            <FlaskConical className="w-3 h-3" /> {hpe.report_number || 'Received'}
                           </span>
                         ) : <span className="text-slate-300">—</span>}
                       </td>
@@ -307,6 +366,7 @@ export default function Patients() {
           </div>
         </div>
       )}
+      </>)}
     </div>
   );
 }

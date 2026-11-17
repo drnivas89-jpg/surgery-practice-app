@@ -2,19 +2,52 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { Patient, Hospital, Payment, Surgery, MonthlyEntry, Attendance, RevenueTransaction, ClassEntry, GovHoliday } from '@/lib/types';
-import { formatDate, formatCurrency, daysUntil, todayLocalDateStr, monthRangeLocal } from '@/lib/helpers';
+import { formatDate, formatCurrency, daysUntil, todayLocalDateStr, monthRangeLocal, isHpeAwaiting } from '@/lib/helpers';
+import { lastBackupDate } from '@/lib/backup';
+import BackupModal from './BackupModal';
+import QuickLogModal from './QuickLogModal';
 import { getColSummary, ColCreditDate } from '@/lib/col';
 import { buildColContext, fetchGovHolidays } from '@/lib/holidays';
+import { buildDashboardAlerts, DashboardAlert } from '@/lib/alerts';
 import { buildHospitalSummaries, SURGERY_CATEGORIES, LEAVE_BREAKDOWN_KEYS, LeaveBreakdown } from '@/lib/hospitalSummary';
 import { View } from './Layout';
 import ColDetailsModal, { ColDetailKind, ColDetailItem } from './ColDetailsModal';
 import {
   Calendar, AlertTriangle, Zap, IndianRupee, Users, Activity, GraduationCap, ChevronLeft, ChevronRight, ArrowRight, Plane,
+  PartyPopper, X, FlaskConical, DatabaseBackup, PenLine,
 } from 'lucide-react';
 
 interface DashboardProps {
   onNavigate: (view: View) => void;
 }
+
+const DISMISSED_KEY = 'dashboardAlertsDismissed';
+
+// Dismissals last for the current day only, and are keyed on the alert's
+// text so a changed alert (e.g. a new overdue patient) shows again.
+const alertKey = (a: DashboardAlert) => `${a.id}::${a.title}::${a.detail}`;
+function readDismissed(today: string): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DISMISSED_KEY) || 'null');
+    return raw && raw.date === today && Array.isArray(raw.keys) ? raw.keys : [];
+  } catch {
+    return [];
+  }
+}
+
+const ALERT_STYLE: Record<DashboardAlert['tone'], string> = {
+  rose: 'bg-rose-50 border-rose-200 text-rose-900',
+  amber: 'bg-amber-50 border-amber-200 text-amber-900',
+  sky: 'bg-sky-50 border-sky-200 text-sky-900',
+};
+const ALERT_ICON: Record<DashboardAlert['kind'], typeof Zap> = {
+  col_expiring: Zap,
+  followup_overdue: Calendar,
+  followup_today: Calendar,
+  holiday: PartyPopper,
+  hpe_awaiting: FlaskConical,
+  backup: DatabaseBackup,
+};
 
 const greeting = () => {
   const h = new Date().getHours();
@@ -34,14 +67,20 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const [attendance, setAttendance] = useState<Attendance[]>([]);
   const [classes, setClasses] = useState<ClassEntry[]>([]);
   const [holidays, setHolidays] = useState<GovHoliday[]>([]);
+  const [hpeRecords, setHpeRecords] = useState<{ patient_id: string; findings: string | null; report_image_paths: string[] | null }[]>([]);
+  const [showBackup, setShowBackup] = useState(false);
+  const [showQuickLog, setShowQuickLog] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [lastBackup, setLastBackup] = useState(() => lastBackupDate());
   const [loading, setLoading] = useState(true);
   const [colYear, setColYear] = useState(new Date().getFullYear());
   const [colDetail, setColDetail] = useState<ColDetailKind | null>(null);
+  const [dismissed, setDismissed] = useState<string[]>(() => readDismissed(todayLocalDateStr()));
 
   useEffect(() => {
     if (!user) return;
     (async () => {
-      const [{ data: p }, { data: h }, { data: pay }, { data: sur }, { data: me }, { data: att }, { data: rt }, { data: cls }, hol] = await Promise.all([
+      const [{ data: p }, { data: h }, { data: pay }, { data: sur }, { data: me }, { data: att }, { data: rt }, { data: cls }, hol, { data: hpe }] = await Promise.all([
         supabase.from('patients').select('*, hospital:hospitals(*)').order('created_at', { ascending: false }),
         supabase.from('hospitals').select('*').order('name'),
         supabase.from('payments').select('*, patient:patients(*)'),
@@ -51,7 +90,9 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
         supabase.from('revenue_transactions').select('*, hospital:hospitals(*)'),
         supabase.from('classes').select('*, hospital:hospitals(*)').order('class_date', { ascending: true }),
         fetchGovHolidays(),
+        supabase.from('follow_ups').select('patient_id, findings, report_image_paths').eq('type', 'biopsy'),
       ]);
+      setHpeRecords(hpe || []);
       setPatients(p || []);
       setHospitals(h || []);
       setPayments(pay || []);
@@ -63,7 +104,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       setHolidays(hol);
       setLoading(false);
     })();
-  }, [user]);
+  }, [user, reloadKey]);
 
   const now = new Date();
   const todayStr = todayLocalDateStr(now);
@@ -109,6 +150,31 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   }, [col, colYear]);
   const nextExpiry = colItems.available[0]?.credit.expiryDate || null;
 
+  const alerts = useMemo(
+    () => {
+      const patientById = new Map(patients.map((p) => [p.id, p]));
+      const hpeAwaiting = hpeRecords
+        .filter(isHpeAwaiting)
+        .map((h) => patientById.get(h.patient_id))
+        .filter((p): p is Patient => !!p)
+        .map((p) => ({ patientName: p.patient_name, surgeryDate: p.surgery_date }));
+      return buildDashboardAlerts({ today: todayStr, availableCredits: col.availableDates, patients, colContext, hpeAwaiting, lastBackup });
+    },
+    [todayStr, col, patients, colContext, hpeRecords, lastBackup]
+  ).filter((a) => !dismissed.includes(alertKey(a)));
+  const dismissAlert = (a: DashboardAlert) => {
+    const next = [...dismissed, alertKey(a)];
+    setDismissed(next);
+    try { localStorage.setItem(DISMISSED_KEY, JSON.stringify({ date: todayStr, keys: next })); } catch { /* storage unavailable */ }
+  };
+  const openAlert = (a: DashboardAlert) => {
+    if (a.kind === 'col_expiring') setColDetail('available');
+    else if (a.kind === 'holiday') onNavigate('hospitals');
+    else if (a.kind === 'hpe_awaiting') onNavigate('patients');
+    else if (a.kind === 'backup') setShowBackup(true);
+    else document.getElementById('followups')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   const upcomingFollowUps = patients
     .filter((p) => !!p.follow_up_date)
     .map((p) => ({ patient: p, daysLeft: daysUntil(p.follow_up_date) }))
@@ -151,7 +217,35 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
         <p className="relative text-sky-100 text-sm font-medium">{now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
         <h1 className="relative text-2xl sm:text-3xl font-bold mt-1">{greeting()}, Doctor</h1>
         <p className="relative text-sky-100/90 text-sm mt-1">Your practice at a glance for {now.toLocaleDateString('en-GB', { month: 'long' })}</p>
+        {hospitals.length > 0 && (
+          <button
+            onClick={() => setShowQuickLog(true)}
+            className="relative mt-4 inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-sky-700 shadow-md hover:bg-sky-50 transition"
+          >
+            <PenLine className="w-4 h-4" /> Log the day
+          </button>
+        )}
       </div>
+
+      {alerts.length > 0 && (
+        <div className="space-y-2" role="status" aria-label="Alerts">
+          {alerts.map((a) => {
+            const Icon = ALERT_ICON[a.kind];
+            return (
+              <div key={a.id} className={`flex items-start gap-3 rounded-xl border p-3.5 ${ALERT_STYLE[a.tone]}`}>
+                <Icon className="w-5 h-5 flex-shrink-0 mt-0.5 opacity-80" />
+                <button onClick={() => openAlert(a)} className="flex-1 min-w-0 text-left">
+                  <p className="text-sm font-semibold">{a.title}</p>
+                  <p className="text-xs opacity-80 mt-0.5">{a.detail}</p>
+                </button>
+                <button onClick={() => dismissAlert(a)} className="p-1 -m-1 rounded-md opacity-50 hover:opacity-100 hover:bg-black/5" aria-label="Dismiss for today" title="Dismiss for today">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {patients.length === 0 && hospitals.length === 0 && (
         <div className="card p-8 text-center">
@@ -235,7 +329,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-        <div className="card p-5 lg:col-span-3">
+        <div id="followups" className="card p-5 lg:col-span-3 scroll-mt-20">
           <div className="flex items-center gap-2 mb-4"><Calendar className="w-4 h-4 text-violet-500" /><h2 className="font-semibold text-slate-800">Upcoming Follow-ups</h2></div>
           {upcomingFollowUps.length === 0 ? (
             <p className="text-sm text-slate-400 py-6 text-center">No follow-up visits scheduled.</p>
@@ -291,6 +385,19 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
           )}
         </div>
       </div>
+
+      {showQuickLog && user && (
+        <QuickLogModal
+          hospitals={hospitals}
+          attendance={attendance}
+          colContext={colContext}
+          userId={user.id}
+          onClose={() => setShowQuickLog(false)}
+          onSaved={() => { setShowQuickLog(false); setReloadKey((k) => k + 1); }}
+        />
+      )}
+
+      {showBackup && <BackupModal onClose={() => { setShowBackup(false); setLastBackup(lastBackupDate()); }} />}
 
       {colDetail && (
         <ColDetailsModal kind={colDetail} year={colYear} items={colItems[colDetail]} onClose={() => setColDetail(null)} />

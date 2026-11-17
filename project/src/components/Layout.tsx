@@ -1,12 +1,15 @@
 import { ReactNode, useEffect, useState } from 'react';
 import { useAuth } from '@/lib/auth';
-import { LayoutDashboard, Users, Building2, DollarSign, LogOut, Stethoscope, FileBarChart, FileText, ClipboardList, Zap, Share2, KeyRound, X, CheckCircle2, AlertCircle, BookOpen, ChevronsLeft, ChevronsRight, Menu } from 'lucide-react';
+import { LayoutDashboard, Users, Building2, DollarSign, LogOut, Stethoscope, FileBarChart, FileText, ClipboardList, Zap, Share2, KeyRound, X, CheckCircle2, AlertCircle, BookOpen, ChevronsLeft, ChevronsRight, Menu, DatabaseBackup, Search } from 'lucide-react';
+import SearchPalette from './SearchPalette';
+import BackupModal from './BackupModal';
 
 export type View = 'dashboard' | 'patients' | 'hospitals' | 'revenue' | 'reports' | 'consent' | 'logbook' | 'col' | 'sharing' | 'publications';
 
 interface LayoutProps {
   current: View;
   onNavigate: (view: View) => void;
+  onOpenPatient: (patientId: string) => void;
   children: ReactNode;
 }
 
@@ -151,9 +154,19 @@ function CollapsedTooltip({ label }: { label: string }) {
 
 const ALL_ITEMS = navSections.flatMap((s) => s.items);
 
-export default function Layout({ current, onNavigate, children }: LayoutProps) {
+export default function Layout({ current, onNavigate, onOpenPatient, children }: LayoutProps) {
   const { user, signOut } = useAuth();
   const [showChangePassword, setShowChangePassword] = useState(false);
+  const [showBackup, setShowBackup] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setShowSearch(true); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(() => {
     if (typeof window === 'undefined') return false;
@@ -187,6 +200,18 @@ export default function Layout({ current, onNavigate, children }: LayoutProps) {
             <X className="w-5 h-5" />
           </button>
         )}
+      </div>
+
+      <div className={iconsOnly ? 'px-2 pt-3' : 'px-3 pt-4'}>
+        <button
+          onClick={() => { setShowSearch(true); setMobileOpen(false); }}
+          aria-label="Search"
+          className={`group relative w-full flex items-center rounded-xl bg-white/5 text-sm text-slate-400 ring-1 ring-inset ring-white/10 hover:bg-white/10 hover:text-white transition ${iconsOnly ? 'justify-center py-2.5' : 'gap-2.5 px-3 py-2.5'}`}
+        >
+          <Search className="w-4 h-4 flex-shrink-0" />
+          {!iconsOnly && <><span className="flex-1 text-left">Search…</span><kbd className="hidden lg:inline text-[10px] font-sans text-slate-500 border border-white/10 rounded px-1.5 py-0.5">Ctrl K</kbd></>}
+          {iconsOnly && <CollapsedTooltip label="Search (Ctrl K)" />}
+        </button>
       </div>
 
       <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto overflow-x-hidden">
@@ -243,6 +268,17 @@ export default function Layout({ current, onNavigate, children }: LayoutProps) {
           {iconsOnly && <CollapsedTooltip label="Expand sidebar" />}
         </button>
         <button
+          onClick={() => { setShowBackup(true); setMobileOpen(false); }}
+          aria-label="Backup data"
+          className={`group relative w-full flex items-center rounded-xl text-sm font-medium text-slate-400 hover:bg-white/5 hover:text-white transition ${
+            iconsOnly ? 'justify-center px-0 py-2.5' : 'gap-3 px-3 py-2.5'
+          }`}
+        >
+          <DatabaseBackup className="w-4 h-4 flex-shrink-0" />
+          {!iconsOnly && 'Backup data'}
+          {iconsOnly && <CollapsedTooltip label="Backup data" />}
+        </button>
+        <button
           onClick={() => setShowChangePassword(true)}
           aria-label="Change Password"
           className={`group relative w-full flex items-center rounded-xl text-sm font-medium text-slate-400 hover:bg-white/5 hover:text-white transition ${
@@ -296,7 +332,10 @@ export default function Layout({ current, onNavigate, children }: LayoutProps) {
         <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-sky-400 to-teal-500 flex items-center justify-center">
           <Stethoscope className="w-4 h-4 text-white" />
         </div>
-        <p className="font-semibold truncate">{currentLabel}</p>
+        <p className="font-semibold truncate flex-1">{currentLabel}</p>
+        <button onClick={() => setShowSearch(true)} className="p-1.5 -mr-1.5 rounded-lg hover:bg-white/10" aria-label="Search">
+          <Search className="w-5 h-5" />
+        </button>
       </header>
 
       <div className={`transition-[margin] duration-300 ease-in-out ${collapsed ? 'lg:ml-[76px]' : 'lg:ml-64'}`}>
@@ -306,6 +345,8 @@ export default function Layout({ current, onNavigate, children }: LayoutProps) {
       </div>
 
       {showChangePassword && <ChangePasswordModal onClose={() => setShowChangePassword(false)} />}
+      {showBackup && <BackupModal onClose={() => setShowBackup(false)} />}
+      {showSearch && <SearchPalette onClose={() => setShowSearch(false)} onNavigate={onNavigate} onOpenPatient={onOpenPatient} />}
     </div>
   );
 }

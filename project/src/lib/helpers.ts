@@ -6,6 +6,12 @@ import type { Patient } from './types';
 // for practice registrations (IP surgical always has patient_type 'ip';
 // legacy pre-patient_type rows have treatment_type null), so it reliably
 // marks a study case. They carry no fees and don't touch daily OP/IP counts.
+// A case's HPE record (follow_ups type 'biopsy') with neither report text
+// nor a report scan means the specimen was sent and the report is awaited.
+export function isHpeAwaiting(f: { findings: string | null; report_image_paths: string[] | null }): boolean {
+  return !(f.findings || '').trim() && (f.report_image_paths || []).length === 0;
+}
+
 export function isSurgicalCase(p: Pick<Patient, 'patient_type' | 'treatment_type'>): boolean {
   return p.patient_type === null && p.treatment_type === 'surgical';
 }
