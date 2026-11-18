@@ -21,6 +21,8 @@ import AttendanceStatusPicker from './AttendanceStatusPicker';
 import PresentDutyPrompt from './PresentDutyPrompt';
 import GovHolidays from './GovHolidays';
 import MissingDaysModal from './MissingDaysModal';
+import LeaveBalance from './LeaveBalance';
+import { useUserSettings } from '@/lib/leaveBalance';
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -32,6 +34,7 @@ export default function Hospitals() {
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
   const [entries, setEntries] = useState<MonthlyEntry[]>([]);
   const [attendance, setAttendance] = useState<Attendance[]>([]);
+  const userSettings = useUserSettings();
   const [patients, setPatients] = useState<Patient[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [revenueTransactions, setRevenueTransactions] = useState<RevenueTransaction[]>([]);
@@ -753,6 +756,13 @@ export default function Hospitals() {
                     )}
                   </div>
                 </button>
+                <LeaveBalance
+                  hospitalId={hs.hospital.id}
+                  attendance={attendance}
+                  quota={userSettings.settings.leaveQuotas?.[hs.hospital.id]}
+                  available={userSettings.available}
+                  onSave={(q) => userSettings.save({ ...userSettings.settings, leaveQuotas: { ...userSettings.settings.leaveQuotas, [hs.hospital.id]: q } })}
+                />
               </div>
             ))}
           </div>
