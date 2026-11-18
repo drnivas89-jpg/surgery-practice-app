@@ -4,7 +4,7 @@ import { useAuth } from '@/lib/auth';
 import { Patient, Hospital, Surgery, ClassEntry, Publication, Investigation, ProcedureCategory } from '@/lib/types';
 import { formatDate, getImageUrl } from '@/lib/helpers';
 import { SURGERY_CATEGORIES, categorizeSurgery as categorize, SurgeryCategory } from '@/lib/hospitalSummary';
-import { Activity, Download, Filter, X, GraduationCap, BookOpen, Stethoscope, Pencil, RefreshCw, FileSpreadsheet } from 'lucide-react';
+import { Activity, Download, Filter, X, GraduationCap, BookOpen, Stethoscope, Pencil, RefreshCw, FileSpreadsheet, EyeOff } from 'lucide-react';
 import { exportLogbookExcel, HpeInfo } from '@/lib/logbookExport';
 import jsPDF from 'jspdf';
 import { CLAVIEN_DINDO } from '@/lib/complications';
@@ -644,6 +644,14 @@ export default function SurgicalLogbook() {
           className="btn-secondary"
         >
           <FileSpreadsheet className="w-4 h-4 text-emerald-600" /> Export Excel
+        </button>
+        <button
+          onClick={() => exportLogbookExcel(filtered, hpeByPatient, { doctorName, qualifications }, true)}
+          disabled={filtered.length === 0}
+          className="btn-secondary"
+          title="No names, case IDs or lab numbers; age as a 10-year band and month instead of date — for thesis, audit or presentations"
+        >
+          <EyeOff className="w-4 h-4 text-slate-500" /> Anonymised Excel
         </button>
         <button
           onClick={handleExportPdf}
