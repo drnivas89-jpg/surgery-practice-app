@@ -7,7 +7,7 @@ import { todayLocalDateStr } from './helpers';
 export const BACKUP_TABLES = [
   'hospitals', 'patients', 'surgeries', 'follow_ups', 'follow_up_visits', 'investigations', 'vitals',
   'payments', 'monthly_entries', 'revenue_transactions', 'attendance', 'gov_holidays',
-  'classes', 'publications', 'surgery_types', 'consent_proformas',
+  'classes', 'publications', 'surgery_types', 'consent_proformas', 'note_templates', 'user_settings',
 ] as const;
 
 export const LAST_BACKUP_KEY = 'lastBackupDate';
@@ -60,6 +60,36 @@ export async function downloadExcelBackup(data: BackupData) {
 export function downloadJsonBackup(data: BackupData) {
   const payload = { app: 'surgery-practice', version: 1, exportedAt: new Date().toISOString(), tables: data };
   saveAs(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }), `surgery-practice-backup-${todayLocalDateStr()}.json`);
+}
+
+export interface RestoreResult {
+  added: number;
+  perTable: { table: string; rows: number; error?: string }[];
+}
+
+// Restores a JSON backup by adding back only the records that are missing
+// — anything already present is left exactly as it is. Rows are re-owned
+// by the signed-in doctor so a backup can also move data to a new account.
+export async function restoreJsonBackup(file: File, userId: string): Promise<RestoreResult> {
+  const parsed = JSON.parse(await file.text());
+  if (parsed?.app !== 'surgery-practice' || typeof parsed.tables !== 'object') {
+    throw new Error('This is not a Surgery Practice backup file.');
+  }
+  const result: RestoreResult = { added: 0, perTable: [] };
+  for (const table of BACKUP_TABLES) {
+    const rows: Record<string, unknown>[] = parsed.tables[table] || [];
+    if (rows.length === 0) continue;
+    const owned = rows.map((r) => ('user_id' in r ? { ...r, user_id: userId } : r));
+    const conflict = table === 'user_settings' ? 'user_id' : 'id';
+    let error: string | undefined;
+    for (let i = 0; i < owned.length; i += 500) {
+      const { error: err } = await supabase.from(table).upsert(owned.slice(i, i + 500), { onConflict: conflict, ignoreDuplicates: true });
+      if (err) { error = err.message; break; }
+    }
+    result.perTable.push({ table, rows: rows.length, error });
+    if (!error) result.added += rows.length;
+  }
+  return result;
 }
 
 export function recordBackupDone() {

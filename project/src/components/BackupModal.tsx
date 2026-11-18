@@ -1,6 +1,7 @@
-import { useState } from 'react';
-import { X, DatabaseBackup, FileSpreadsheet, FileJson, CheckCircle2, AlertCircle } from 'lucide-react';
-import { fetchAllData, downloadExcelBackup, downloadJsonBackup, recordBackupDone, lastBackupDate, BackupData } from '@/lib/backup';
+import { useRef, useState } from 'react';
+import { useAuth } from '@/lib/auth';
+import { X, DatabaseBackup, FileSpreadsheet, FileJson, CheckCircle2, AlertCircle, Upload } from 'lucide-react';
+import { fetchAllData, downloadExcelBackup, downloadJsonBackup, recordBackupDone, lastBackupDate, restoreJsonBackup, BackupData } from '@/lib/backup';
 import { formatDate } from '@/lib/helpers';
 
 export default function BackupModal({ onClose }: { onClose: () => void }) {
@@ -9,6 +10,26 @@ export default function BackupModal({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [cache, setCache] = useState<BackupData | null>(null);
   const last = lastBackupDate();
+  const { user } = useAuth();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [confirmRestore, setConfirmRestore] = useState<File | null>(null);
+
+  const restore = async (file: File) => {
+    if (!user) return;
+    setConfirmRestore(null);
+    setError(null);
+    setDone(null);
+    setBusy('Restoring…');
+    try {
+      const r = await restoreJsonBackup(file, user.id);
+      const failed = r.perTable.filter((t) => t.error);
+      setDone(`Restore finished — missing records were added back (existing ones untouched). Refresh the page to see them.${failed.length ? ` Skipped: ${failed.map((t) => t.table).join(', ')}.` : ''}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Restore failed.');
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const run = async (kind: 'excel' | 'json') => {
     setError(null);
@@ -60,6 +81,23 @@ export default function BackupModal({ onClose }: { onClose: () => void }) {
         <div className="space-y-2.5">
           {option('excel', FileSpreadsheet, 'Excel workbook', 'Readable — one sheet per record type. Open in Excel or Google Sheets.', 'bg-emerald-100 text-emerald-600')}
           {option('json', FileJson, 'Complete JSON file', 'Every field exactly as stored — keep this one for a full restore.', 'bg-violet-100 text-violet-600')}
+        </div>
+
+        <div className="mt-4 pt-4 border-t border-slate-100">
+          <input ref={fileRef} type="file" accept=".json,application/json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) setConfirmRestore(f); e.target.value = ''; }} />
+          {confirmRestore ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <p>Restore <strong>{confirmRestore.name}</strong>? Only records missing from the app are added back — nothing existing is changed or deleted.</p>
+              <div className="flex gap-2 mt-2">
+                <button onClick={() => restore(confirmRestore)} className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-semibold">Restore</button>
+                <button onClick={() => setConfirmRestore(null)} className="px-3 py-1.5 rounded-lg text-xs text-amber-800">Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <button onClick={() => fileRef.current?.click()} disabled={!!busy} className="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300 px-4 py-3 text-sm font-medium text-slate-600 hover:border-sky-400 hover:text-sky-700 transition disabled:opacity-50">
+              <Upload className="w-4 h-4" /> Restore from a JSON backup file
+            </button>
+          )}
         </div>
 
         {busy && <p className="text-sm text-slate-500 mt-4 flex items-center gap-2"><span className="w-4 h-4 border-2 border-sky-200 border-t-sky-600 rounded-full animate-spin" /> {busy}</p>}

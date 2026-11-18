@@ -1,6 +1,7 @@
 import { ReactNode, useEffect, useState } from 'react';
 import { useAuth } from '@/lib/auth';
-import { LayoutDashboard, Users, Building2, DollarSign, LogOut, Stethoscope, FileBarChart, FileText, ClipboardList, Zap, Share2, KeyRound, X, CheckCircle2, AlertCircle, BookOpen, ChevronsLeft, ChevronsRight, Menu, DatabaseBackup, Search } from 'lucide-react';
+import { LayoutDashboard, Users, Building2, DollarSign, LogOut, Stethoscope, FileBarChart, FileText, ClipboardList, Zap, Share2, KeyRound, X, CheckCircle2, AlertCircle, BookOpen, ChevronsLeft, ChevronsRight, Menu, DatabaseBackup, Search, Trash2 } from 'lucide-react';
+import RecycleBinModal from './RecycleBinModal';
 import SearchPalette from './SearchPalette';
 import BackupModal from './BackupModal';
 
@@ -159,6 +160,7 @@ export default function Layout({ current, onNavigate, onOpenPatient, children }:
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [showBin, setShowBin] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -279,6 +281,17 @@ export default function Layout({ current, onNavigate, onOpenPatient, children }:
           {iconsOnly && <CollapsedTooltip label="Backup data" />}
         </button>
         <button
+          onClick={() => { setShowBin(true); setMobileOpen(false); }}
+          aria-label="Recycle bin"
+          className={`group relative w-full flex items-center rounded-xl text-sm font-medium text-slate-400 hover:bg-white/5 hover:text-white transition ${
+            iconsOnly ? 'justify-center px-0 py-2.5' : 'gap-3 px-3 py-2.5'
+          }`}
+        >
+          <Trash2 className="w-4 h-4 flex-shrink-0" />
+          {!iconsOnly && 'Recycle bin'}
+          {iconsOnly && <CollapsedTooltip label="Recycle bin" />}
+        </button>
+        <button
           onClick={() => setShowChangePassword(true)}
           aria-label="Change Password"
           className={`group relative w-full flex items-center rounded-xl text-sm font-medium text-slate-400 hover:bg-white/5 hover:text-white transition ${
@@ -346,6 +359,7 @@ export default function Layout({ current, onNavigate, onOpenPatient, children }:
 
       {showChangePassword && <ChangePasswordModal onClose={() => setShowChangePassword(false)} />}
       {showBackup && <BackupModal onClose={() => setShowBackup(false)} />}
+      {showBin && <RecycleBinModal onClose={() => setShowBin(false)} />}
       {showSearch && <SearchPalette onClose={() => setShowSearch(false)} onNavigate={onNavigate} onOpenPatient={onOpenPatient} />}
     </div>
   );

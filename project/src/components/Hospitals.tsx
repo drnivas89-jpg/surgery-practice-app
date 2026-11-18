@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { moveToBin, binParts } from '@/lib/recycleBin';
 import { useAuth } from '@/lib/auth';
 import { Hospital, MonthlyEntry, Attendance, Patient, ClassEntry, Payment, RevenueTransaction, Surgery, GovHoliday } from '@/lib/types';
 import { formatDate, uploadImage, getImageUrl, ensurePresentAttendance, todayLocalDateStr, monthRangeLocal, isSurgicalCase } from '@/lib/helpers';
@@ -260,10 +261,8 @@ export default function Hospitals() {
 
   const handleDeleteDay = async (hospitalId: string, date: string) => {
     if (!confirm(`Delete all daily-entry and attendance records for ${formatDate(date)}? This cannot be undone.`)) return;
-    await Promise.all([
-      supabase.from('monthly_entries').delete().eq('hospital_id', hospitalId).eq('entry_date', date),
-      supabase.from('attendance').delete().eq('hospital_id', hospitalId).eq('attendance_date', date),
-    ]);
+    const { error: binErr } = await moveToBin('day', `${hospitals.find((h) => h.id === hospitalId)?.name || 'Hospital'} — ${formatDate(date)}`, binParts.day(hospitalId, date));
+    if (binErr) { alert(binErr); return; }
     load();
   };
 
@@ -345,7 +344,8 @@ export default function Hospitals() {
 
   const handleDeleteClass = async (id: string) => {
     if (!confirm('Delete this class entry?')) return;
-    await supabase.from('classes').delete().eq('id', id);
+    const { error: binErr } = await moveToBin('class', 'Class entry', binParts.row('classes', id));
+    if (binErr) { alert(binErr); return; }
     load();
   };
 

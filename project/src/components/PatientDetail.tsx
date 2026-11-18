@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { moveToBin, binParts } from '@/lib/recycleBin';
 import { useAuth } from '@/lib/auth';
 import { Patient, Surgery, FollowUp, FollowUpVisit, Payment, SurgeryType, Investigation, Vitals, ProcedureCategory } from '@/lib/types';
 import { formatDate, formatCurrency, uploadImage, getImageUrl, ensurePresentAttendance, todayLocalDateStr, isSurgicalCase } from '@/lib/helpers';
@@ -243,7 +244,8 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
 
   const handleDeleteSurgery = async (id: string) => {
     if (!confirm('Delete this surgery record?')) return;
-    await supabase.from('surgeries').delete().eq('id', id);
+    const { error: binErr } = await moveToBin('surgery', `Surgery — ${patient?.patient_name || ''}`, binParts.row('surgeries', id));
+    if (binErr) { alert(binErr); return; }
     load();
   };
 
@@ -283,7 +285,8 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
 
   const handleDeleteVisit = async (id: string) => {
     if (!confirm('Delete this follow-up visit?')) return;
-    await supabase.from('follow_up_visits').delete().eq('id', id);
+    const { error: binErr } = await moveToBin('visit', `Follow-up visit — ${patient?.patient_name || ''}`, binParts.row('follow_up_visits', id));
+    if (binErr) { alert(binErr); return; }
     load();
   };
 
@@ -332,7 +335,8 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
 
   const handleDeleteFollowUp = async (id: string) => {
     if (!confirm('Delete this follow-up record?')) return;
-    await supabase.from('follow_ups').delete().eq('id', id);
+    const { error: binErr } = await moveToBin('pathology', `Pathology report — ${patient?.patient_name || ''}`, binParts.row('follow_ups', id));
+    if (binErr) { alert(binErr); return; }
     load();
   };
 
@@ -368,7 +372,8 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
 
   const handleDeletePayment = async (id: string) => {
     if (!confirm('Delete this payment record?')) return;
-    await supabase.from('payments').delete().eq('id', id);
+    const { error: binErr } = await moveToBin('payment', `Payment — ${patient?.patient_name || ''}`, binParts.row('payments', id));
+    if (binErr) { alert(binErr); return; }
     load();
   };
 
@@ -418,7 +423,8 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
 
   const handleDeleteInvestigation = async (id: string) => {
     if (!confirm('Delete this investigation record?')) return;
-    await supabase.from('investigations').delete().eq('id', id);
+    const { error: binErr } = await moveToBin('investigation', `Investigation — ${patient?.patient_name || ''}`, binParts.row('investigations', id));
+    if (binErr) { alert(binErr); return; }
     load();
   };
 
@@ -467,7 +473,8 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
 
   const handleDeleteVitals = async (id: string) => {
     if (!confirm('Delete this vitals reading?')) return;
-    await supabase.from('vitals').delete().eq('id', id);
+    const { error: binErr } = await moveToBin('vitals', `Vitals — ${patient?.patient_name || ''}`, binParts.row('vitals', id));
+    if (binErr) { alert(binErr); return; }
     load();
   };
 

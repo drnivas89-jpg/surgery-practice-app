@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { moveToBin, binParts } from '@/lib/recycleBin';
 import { Hospital, Patient, Payment, MonthlyEntry, RevenueTransaction } from '@/lib/types';
 import { formatCurrency, formatDate, todayLocalDateStr } from '@/lib/helpers';
 import { buildMonthlyFeeTally, sumFeeTally, formatMonth } from '@/lib/fees';
@@ -165,7 +166,8 @@ export default function Revenue() {
 
   const handleDeletePayment = async (id: string) => {
     if (!confirm('Delete this payment?')) return;
-    await supabase.from('payments').delete().eq('id', id);
+    const { error: binErr } = await moveToBin('payment', 'Payment', binParts.row('payments', id));
+    if (binErr) { alert(binErr); return; }
     load();
   };
 
@@ -225,7 +227,8 @@ export default function Revenue() {
 
   const handleDeleteEntry = async (id: string) => {
     if (!confirm('Delete this daily entry?')) return;
-    await supabase.from('monthly_entries').delete().eq('id', id);
+    const { error: binErr } = await moveToBin('daily_entry', 'Daily entry', binParts.row('monthly_entries', id));
+    if (binErr) { alert(binErr); return; }
     load();
   };
 
@@ -270,7 +273,8 @@ export default function Revenue() {
 
   const handleDeleteTxn = async (id: string) => {
     if (!confirm('Delete this transaction?')) return;
-    await supabase.from('revenue_transactions').delete().eq('id', id);
+    const { error: binErr } = await moveToBin('revenue', 'Revenue transaction', binParts.row('revenue_transactions', id));
+    if (binErr) { alert(binErr); return; }
     load();
   };
 

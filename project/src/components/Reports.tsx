@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { moveToBin, binParts } from '@/lib/recycleBin';
 import { Hospital, MonthlyEntry, Surgery, Patient, Attendance, Payment, RevenueTransaction, GovHoliday } from '@/lib/types';
 import { formatCurrency, formatDate, todayLocalDateStr, monthRangeLocal } from '@/lib/helpers';
 import { getColSummary } from '@/lib/col';
@@ -207,10 +208,8 @@ export default function Reports() {
 
   const handleDeleteDay = async (hospitalId: string, date: string) => {
     if (!confirm(`Delete all daily-entry and attendance records for ${formatDate(date)}? This cannot be undone.`)) return;
-    await Promise.all([
-      supabase.from('monthly_entries').delete().eq('hospital_id', hospitalId).eq('entry_date', date),
-      supabase.from('attendance').delete().eq('hospital_id', hospitalId).eq('attendance_date', date),
-    ]);
+    const { error: binErr } = await moveToBin('day', `${hospitals.find((h) => h.id === hospitalId)?.name || 'Hospital'} — ${formatDate(date)}`, binParts.day(hospitalId, date));
+    if (binErr) { alert(binErr); return; }
     load();
   };
 

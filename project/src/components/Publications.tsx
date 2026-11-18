@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { moveToBin, binParts } from '@/lib/recycleBin';
 import { useAuth } from '@/lib/auth';
 import { Publication } from '@/lib/types';
 import { uploadImage } from '@/lib/helpers';
@@ -92,7 +93,8 @@ export default function Publications() {
 
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this publication?')) return;
-    await supabase.from('publications').delete().eq('id', id);
+    const { error: binErr } = await moveToBin('publication', 'Publication', binParts.row('publications', id));
+    if (binErr) { alert(binErr); return; }
     load();
   };
 

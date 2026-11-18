@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { moveToBin, binParts } from '@/lib/recycleBin';
 import { Patient, Hospital, Surgery, FollowUp } from '@/lib/types';
 import { formatDate, isSurgicalCase, isHpeAwaiting } from '@/lib/helpers';
 import { ClipboardList, Plus, Search, Trash2, Pencil, Download, FlaskConical, List, BarChart3 } from 'lucide-react';
@@ -100,8 +101,9 @@ export default function Patients({ focusPatientId, onFocusHandled }: { focusPati
   const countBy = (cat: string) => filtered.filter((p) => primarySurgery(p)?.procedure_category === cat).length;
 
   const handleDeletePatient = async (id: string, name: string) => {
-    if (!confirm(`Delete case "${name}" and all associated records? This cannot be undone.`)) return;
-    await supabase.from('patients').delete().eq('id', id);
+    if (!confirm(`Delete case "${name}" and all associated records? You can restore it from the Recycle bin for 30 days.`)) return;
+    const { error: binErr } = await moveToBin('case', name, binParts.patient(id));
+    if (binErr) { alert(binErr); return; }
     load();
   };
 

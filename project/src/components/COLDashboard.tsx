@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
+import { moveToBin, binParts } from '@/lib/recycleBin';
 import { useAuth } from '@/lib/auth';
 import { Attendance, Hospital, GovHoliday } from '@/lib/types';
 import { formatDate } from '@/lib/helpers';
@@ -66,7 +67,8 @@ export default function COLDashboard() {
   };
   const deleteCredit = async (attendanceId: string) => {
     if (!confirm('Delete this COL credit? If it has already been redeemed by a leave, that leave will lose its link.')) return;
-    await supabase.from('attendance').delete().eq('id', attendanceId);
+    const { error: binErr } = await moveToBin('col_credit', 'COL credit', binParts.row('attendance', attendanceId));
+    if (binErr) { alert(binErr); return; }
     load();
   };
   const unlinkUsage = async (leaveAttendanceId: string) => {
