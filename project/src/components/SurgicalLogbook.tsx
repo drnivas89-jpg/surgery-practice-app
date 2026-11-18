@@ -7,6 +7,9 @@ import { SURGERY_CATEGORIES, categorizeSurgery as categorize, SurgeryCategory } 
 import { Activity, Download, Filter, X, GraduationCap, BookOpen, Stethoscope, Pencil, RefreshCw, FileSpreadsheet } from 'lucide-react';
 import { exportLogbookExcel, HpeInfo } from '@/lib/logbookExport';
 import jsPDF from 'jspdf';
+import { CLAVIEN_DINDO } from '@/lib/complications';
+import VoiceButton from './VoiceButton';
+import NoteTemplates from './NoteTemplates';
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -926,6 +929,8 @@ function LogbookCaseEditor({ row, onClose, onSaved }: { row: LogbookRow; onClose
   const [anaesthesia, setAnaesthesia] = useState(surgery.anaesthesia_type || '');
   const [procNotes, setProcNotes] = useState(surgery.procedure_notes || '');
   const [outcome, setOutcome] = useState(surgery.outcome || '');
+  const [clavien, setClavien] = useState(surgery.clavien_dindo || '');
+  const [error, setError] = useState<string | null>(null);
   const [surgeryDate, setSurgeryDate] = useState(surgery.surgery_date ? surgery.surgery_date.substring(0, 10) : '');
   const [diagnosis, setDiagnosis] = useState(patient?.diagnosis || '');
   const [saving, setSaving] = useState(false);
@@ -936,14 +941,22 @@ function LogbookCaseEditor({ row, onClose, onSaved }: { row: LogbookRow; onClose
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
-    await supabase.from('surgeries').update({
+    setError(null);
+    const { error: saveErr } = await supabase.from('surgeries').update({
       procedure_name: procName,
       procedure_category: procedureCategory || null,
       anaesthesia_type: anaesthesia,
       procedure_notes: procNotes,
       outcome: outcome || null,
       surgery_date: surgeryDate || null,
+      // Only send the column when the database has it (row loaded with *).
+      ...('clavien_dindo' in surgery || clavien ? { clavien_dindo: clavien || null } : {}),
     }).eq('id', surgery.id);
+    if (saveErr) {
+      setSaving(false);
+      setError(saveErr.message.includes('clavien_dindo') ? 'Complication grade needs the latest database update — clear the grade or run the 20261118 migration.' : saveErr.message);
+      return;
+    }
     if (patient) {
       await supabase.from('patients').update({ diagnosis }).eq('id', patient.id);
     }
@@ -988,13 +1001,29 @@ function LogbookCaseEditor({ row, onClose, onSaved }: { row: LogbookRow; onClose
             <input type="text" value={diagnosis} onChange={(e) => setDiagnosis(e.target.value)} className="form-input" placeholder="e.g. Right inguinal hernia" />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Notes / Intra-op Findings</label>
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+              <label className="block text-sm font-medium text-slate-600">Procedure Notes / Intra-op Findings</label>
+              <span className="flex flex-wrap items-center gap-1">
+                <VoiceButton onText={(t) => setProcNotes((p) => (p.trim() ? `${p.trimEnd()} ${t}` : t))} />
+                <NoteTemplates procedureName={procName} notes={procNotes} onInsert={(c) => setProcNotes((p) => (p.trim() ? `${p.trimEnd()}
+
+${c}` : c))} />
+              </span>
+            </div>
             <textarea value={procNotes} onChange={(e) => setProcNotes(e.target.value)} rows={5} className="form-input resize-none" />
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-600 mb-1.5">Clinical Outcome</label>
             <textarea value={outcome} onChange={(e) => setOutcome(e.target.value)} rows={2} className="form-input resize-none" placeholder="e.g. Uneventful recovery, Wound infection, Readmitted..." />
           </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-600 mb-1.5">Complication grade (Clavien–Dindo)</label>
+            <select value={clavien} onChange={(e) => setClavien(e.target.value)} className="form-input bg-white">
+              <option value="">Not recorded yet</option>
+              {CLAVIEN_DINDO.map((c) => <option key={c.value} value={c.value}>{c.label}{c.value !== 'none' ? ` — ${c.hint}` : ''}</option>)}
+            </select>
+          </div>
+          {error && <p className="text-sm text-rose-600">{error}</p>}
           <button type="submit" disabled={saving} className="w-full py-2.5 bg-sky-600 text-white rounded-lg font-medium hover:bg-sky-700 transition disabled:opacity-60">
             {saving ? 'Saving...' : 'Save Changes'}
           </button>

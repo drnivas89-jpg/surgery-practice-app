@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { formatMonth } from '@/lib/fees';
+import { clavienLabel, isMajorComplication } from '@/lib/complications';
 
 export interface InsightCase {
   date: string | null; // yyyy-mm-dd
@@ -8,6 +9,7 @@ export interface InsightCase {
   hospital: string;
   role: 'performed' | 'assisted';
   outcome: string;
+  grade: string; // Clavien–Dindo value, '' when not recorded
   hpe: 'none' | 'awaiting' | 'received';
 }
 
@@ -54,6 +56,10 @@ export default function CaseInsights({ cases }: { cases: InsightCase[] }) {
   const hpeReceived = scoped.filter((c) => c.hpe === 'received').length;
   const hpeAwaiting = scoped.filter((c) => c.hpe === 'awaiting').length;
   const withOutcome = scoped.filter((c) => c.outcome.trim()).length;
+  const graded = scoped.filter((c) => c.grade);
+  const withComplication = graded.filter((c) => c.grade !== 'none').length;
+  const major = graded.filter((c) => isMajorComplication(c.grade)).length;
+  const pct = (n: number) => `${Math.round((n / graded.length) * 100)}%`;
 
   if (cases.length === 0) {
     return <div className="card p-8 text-center text-slate-500">Record surgical cases to see insights here.</div>;
@@ -75,11 +81,12 @@ export default function CaseInsights({ cases }: { cases: InsightCase[] }) {
         ))}
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <Tile value={scoped.length} label="Cases" />
         <Tile value={scoped.length ? `${Math.round((performed / scoped.length) * 100)}%` : '—'} label={`Performed (${performed}) vs assisted (${scoped.length - performed})`} />
         <Tile value={hpeReceived} label={`HPE reports received${hpeAwaiting ? ` · ${hpeAwaiting} awaited` : ''}`} />
         <Tile value={withOutcome} label="Cases with outcome recorded" />
+        <Tile value={graded.length ? pct(withComplication) : '—'} label={graded.length ? `Complication rate (${withComplication}/${graded.length} graded) · major ${pct(major)}` : 'Complication rate — grade cases to see it'} />
       </div>
 
       <div className="card p-5">
@@ -120,6 +127,7 @@ export default function CaseInsights({ cases }: { cases: InsightCase[] }) {
         <BarList title="By type of surgery" items={countBy(scoped, (c) => c.category || 'Unclassified')} />
         <BarList title="By hospital" items={countBy(scoped, (c) => c.hospital)} />
         <BarList title={`Top ${TOP_N} procedures`} items={countBy(scoped, (c) => c.procedure).slice(0, TOP_N)} />
+        <BarList title="Complications (Clavien–Dindo)" items={countBy(graded.filter((c) => c.grade !== 'none'), (c) => clavienLabel(c.grade))} empty={graded.length ? 'No complications among graded cases.' : 'No grades recorded yet — set one when editing a surgery.'} />
         <BarList title="Recorded outcomes" items={countBy(scoped, (c) => c.outcome.toLowerCase().replace(/\s+/g, ' ').replace(/^./, (s) => s.toUpperCase())).slice(0, TOP_N)} empty="No outcomes recorded yet — add them from the Surgical Logbook." />
       </div>
     </div>

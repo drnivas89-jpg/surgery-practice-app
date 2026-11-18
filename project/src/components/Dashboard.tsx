@@ -14,7 +14,7 @@ import { View } from './Layout';
 import ColDetailsModal, { ColDetailKind, ColDetailItem } from './ColDetailsModal';
 import {
   Calendar, AlertTriangle, Zap, IndianRupee, Users, Activity, GraduationCap, ChevronLeft, ChevronRight, ArrowRight, Plane,
-  PartyPopper, X, FlaskConical, DatabaseBackup, PenLine,
+  PartyPopper, X, FlaskConical, DatabaseBackup, ClipboardCheck, PenLine,
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -46,6 +46,7 @@ const ALERT_ICON: Record<DashboardAlert['kind'], typeof Zap> = {
   followup_today: Calendar,
   holiday: PartyPopper,
   hpe_awaiting: FlaskConical,
+  grade_due: ClipboardCheck,
   backup: DatabaseBackup,
 };
 
@@ -158,9 +159,13 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
         .map((h) => patientById.get(h.patient_id))
         .filter((p): p is Patient => !!p)
         .map((p) => ({ patientName: p.patient_name, surgeryDate: p.surgery_date }));
-      return buildDashboardAlerts({ today: todayStr, availableCredits: col.availableDates, patients, colContext, hpeAwaiting, lastBackup });
+      // Rows only carry clavien_dindo once the 20261118 migration is applied.
+      const ungraded = surgeries.some((s) => 'clavien_dindo' in s)
+        ? surgeries.filter((s) => !s.clavien_dindo).map((s) => ({ patientName: patientById.get(s.patient_id)?.patient_name || 'Unknown', surgeryDate: s.surgery_date }))
+        : [];
+      return buildDashboardAlerts({ today: todayStr, availableCredits: col.availableDates, patients, colContext, hpeAwaiting, ungraded, lastBackup });
     },
-    [todayStr, col, patients, colContext, hpeRecords, lastBackup]
+    [todayStr, col, patients, colContext, hpeRecords, surgeries, lastBackup]
   ).filter((a) => !dismissed.includes(alertKey(a)));
   const dismissAlert = (a: DashboardAlert) => {
     const next = [...dismissed, alertKey(a)];
@@ -170,7 +175,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const openAlert = (a: DashboardAlert) => {
     if (a.kind === 'col_expiring') setColDetail('available');
     else if (a.kind === 'holiday') onNavigate('hospitals');
-    else if (a.kind === 'hpe_awaiting') onNavigate('patients');
+    else if (a.kind === 'hpe_awaiting' || a.kind === 'grade_due') onNavigate('patients');
     else if (a.kind === 'backup') setShowBackup(true);
     else document.getElementById('followups')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };

@@ -42,6 +42,16 @@ describe('dashboard alerts', () => {
     expect(alerts[4].detail).toBe('E — oldest sent 47 days ago');
   });
 
+  it('asks for a 30-day grade only for recent ungraded cases', () => {
+    const run = (surgeryDate: string) => buildDashboardAlerts({
+      today, availableCredits: [], patients: [], colContext: govCtx, lastBackup: today,
+      ungraded: [{ patientName: 'G', surgeryDate }],
+    }).filter((a) => a.kind !== 'holiday').map((a) => a.kind);
+    expect(run('2026-11-01')).toEqual([]); // 16 days: too early
+    expect(run('2026-10-10')).toEqual(['grade_due']); // 38 days
+    expect(run('2026-06-01')).toEqual([]); // older than the lookback
+  });
+
   it('reminds about backups only when due', () => {
     const base = { today, availableCredits: [], patients: [], colContext: buildColContext([], []) };
     expect(buildDashboardAlerts({ ...base, lastBackup: '2026-11-01' })).toEqual([]);

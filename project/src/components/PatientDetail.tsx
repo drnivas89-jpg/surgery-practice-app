@@ -7,6 +7,9 @@ import { formatDate, formatCurrency, uploadImage, getImageUrl, ensurePresentAtte
 import PrescriptionTable, { DEFAULT_PRESCRIPTION } from './PrescriptionTable';
 import PresentDutyPrompt from './PresentDutyPrompt';
 import ImageGallery, { GalleryImage } from './ImageGallery';
+import VoiceButton from './VoiceButton';
+import NoteTemplates from './NoteTemplates';
+import { CLAVIEN_DINDO, clavienLabel, isMajorComplication } from '@/lib/complications';
 import {
   ArrowLeft, Pencil, Activity, UserRound, FlaskConical, IndianRupee, Plus, X,
   Trash2, Settings, TestTube, HeartPulse, ClipboardCheck, MessageSquare, Paperclip, Wrench,
@@ -69,6 +72,10 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   const [anaesthesia, setAnaesthesia] = useState('');
   const [procNotes, setProcNotes] = useState('');
   const [outcome, setOutcome] = useState('');
+  const [clavien, setClavien] = useState('');
+  // Whether the loaded row already has the clavien_dindo column (migration
+  // applied); lets us avoid sending an unknown column to an older database.
+  const [hasClavienCol, setHasClavienCol] = useState(false);
   const [surgeryDate, setSurgeryDate] = useState('');
   const [surgeryImages, setSurgeryImages] = useState<File[]>([]);
   const [existingSurgeryImages, setExistingSurgeryImages] = useState<string[]>([]);
@@ -136,6 +143,8 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
     setSurgeryTypes(st || []);
     setPatient(p);
     setSurgeries(s || []);
+    if (s && s.length > 0) setHasClavienCol('clavien_dindo' in s[0]);
+    else supabase.from('surgeries').select('clavien_dindo').limit(1).then(({ error }) => setHasClavienCol(!error));
     setFollowUps(f || []);
     setFollowUpVisits(fv || []);
     setPayments(pay || []);
@@ -171,7 +180,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
   const resetSurgeryForm = () => {
     setEditingSurgeryId(null);
     setProcName(''); setSurgeryType(''); setProcedureCategory(''); setImplants('');
-    setSurgeryRole('done_by_me'); setAnaesthesia(''); setProcNotes(''); setOutcome('');
+    setSurgeryRole('done_by_me'); setAnaesthesia(''); setProcNotes(''); setOutcome(''); setClavien('');
     setSurgeryDate(''); setSurgeryImages([]); setExistingSurgeryImages([]);
     setConsentImages([]); setExistingConsentImages([]);
   };
@@ -203,6 +212,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
     setAnaesthesia(s.anaesthesia_type || '');
     setProcNotes(s.procedure_notes || '');
     setOutcome(s.outcome || '');
+    setClavien(s.clavien_dindo || '');
     setSurgeryDate(s.surgery_date ? s.surgery_date.substring(0, 10) : '');
     setExistingSurgeryImages(s.image_paths || []);
     setSurgeryImages([]);
@@ -230,13 +240,18 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
       anaesthesia_type: anaesthesia, procedure_notes: procNotes, outcome: outcome || null,
       surgery_date: surgeryDate || null, image_paths: imagePaths,
       consent_image_paths: consentPaths,
+      ...(clavien || hasClavienCol ? { clavien_dindo: clavien || null } : {}),
     };
-    if (editingSurgeryId) {
-      await supabase.from('surgeries').update(payload).eq('id', editingSurgeryId);
-    } else {
-      await supabase.from('surgeries').insert({ ...payload, patient_id: patientId });
-      await markPresentFor(surgeryDate);
+    const { error } = editingSurgeryId
+      ? await supabase.from('surgeries').update(payload).eq('id', editingSurgeryId)
+      : await supabase.from('surgeries').insert({ ...payload, patient_id: patientId });
+    if (error) {
+      alert(error.message.includes('clavien_dindo')
+        ? 'Complication grade needs the latest database update. Ask for the 20261118 migration to be run, or clear the grade and save again.'
+        : error.message);
+      return;
     }
+    if (!editingSurgeryId) await markPresentFor(surgeryDate);
     setShowSurgeryForm(false);
     resetSurgeryForm();
     load();
@@ -692,6 +707,11 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
                   )}
                   {s.procedure_notes && <p className="text-sm text-slate-600 mt-2 whitespace-pre-wrap">{s.procedure_notes}</p>}
                   {s.outcome && <p className="text-xs text-emerald-700 bg-emerald-50 rounded-lg px-2.5 py-1.5 mt-2 inline-block">Outcome: {s.outcome}</p>}
+                  {s.clavien_dindo && (
+                    <p className={`text-xs rounded-lg px-2.5 py-1.5 mt-2 ml-1.5 inline-block ${isMajorComplication(s.clavien_dindo) ? 'text-rose-700 bg-rose-50' : s.clavien_dindo === 'none' ? 'text-emerald-700 bg-emerald-50' : 'text-amber-700 bg-amber-50'}`}>
+                      {s.clavien_dindo === 'none' ? 'No complication' : `Clavien–Dindo ${clavienLabel(s.clavien_dindo)}`}
+                    </p>
+                  )}
                   {s.image_paths && s.image_paths.length > 0 && (
                     <div className="mt-3">
                       <p className="text-xs text-slate-400 mb-1.5">Surgery Images</p>
@@ -908,12 +928,27 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
               <input id="pd-surgery-date" name="surgeryDate" type="date" value={surgeryDate} onChange={(e) => setSurgeryDate(e.target.value)} className="form-input" />
             </div>
             <div>
-              <label htmlFor="pd-proc-notes" className="block text-sm font-medium text-slate-600 mb-1.5">Procedure Notes / Intra-op Findings</label>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+                <label htmlFor="pd-proc-notes" className="block text-sm font-medium text-slate-600">Procedure Notes / Intra-op Findings</label>
+                <span className="flex flex-wrap items-center gap-1">
+                  <VoiceButton onText={(t) => setProcNotes((p) => (p.trim() ? `${p.trimEnd()} ${t}` : t))} />
+                  <NoteTemplates procedureName={procName} notes={procNotes} onInsert={(c) => setProcNotes((p) => (p.trim() ? `${p.trimEnd()}
+
+${c}` : c))} />
+                </span>
+              </div>
               <textarea id="pd-proc-notes" name="procNotes" value={procNotes} onChange={(e) => setProcNotes(e.target.value)} rows={4} className="form-input resize-none" />
             </div>
             <div>
               <label htmlFor="pd-outcome" className="block text-sm font-medium text-slate-600 mb-1.5">Clinical Outcome</label>
               <textarea id="pd-outcome" name="outcome" value={outcome} onChange={(e) => setOutcome(e.target.value)} rows={2} className="form-input resize-none" placeholder="e.g. Uneventful recovery, Wound infection, Readmitted..." />
+            </div>
+            <div>
+              <label htmlFor="pd-clavien" className="block text-sm font-medium text-slate-600 mb-1.5">Complication grade (Clavien–Dindo)</label>
+              <select id="pd-clavien" name="clavien" value={clavien} onChange={(e) => setClavien(e.target.value)} className="form-input">
+                <option value="">Not recorded yet</option>
+                {CLAVIEN_DINDO.map((c) => <option key={c.value} value={c.value}>{c.label}{c.value !== 'none' ? ` — ${c.hint}` : ''}</option>)}
+              </select>
             </div>
             <div>
               <label htmlFor="pd-implants" className="block text-sm font-medium text-slate-600 mb-1.5 flex items-center gap-1.5">

@@ -7,8 +7,12 @@ export const COL_EXPIRY_WARNING_DAYS = 30;
 export const HOLIDAY_LOOKAHEAD_DAYS = 7;
 export const HPE_OVERDUE_DAYS = 21;
 export const BACKUP_REMINDER_DAYS = 30;
+// Ask for a complication grade once a case is this old, but only for
+// recent cases — older history is not nagged about.
+export const GRADE_DUE_DAYS = 30;
+export const GRADE_LOOKBACK_DAYS = 90;
 
-export type AlertKind = 'col_expiring' | 'followup_overdue' | 'followup_today' | 'holiday' | 'hpe_awaiting' | 'backup';
+export type AlertKind = 'col_expiring' | 'followup_overdue' | 'followup_today' | 'holiday' | 'hpe_awaiting' | 'grade_due' | 'backup';
 export type AlertTone = 'rose' | 'amber' | 'sky';
 
 export interface DashboardAlert {
@@ -49,13 +53,15 @@ export interface AlertSources {
   colContext: ColContext;
   /** Cases whose HPE specimen was sent but no report is entered yet. */
   hpeAwaiting?: { patientName: string; surgeryDate: string | null }[];
+  /** Surgeries with no Clavien–Dindo grade yet (pass [] when the column doesn't exist). */
+  ungraded?: { patientName: string; surgeryDate: string | null }[];
   /** yyyy-mm-dd of the last backup taken on this device, or null. */
   lastBackup?: string | null;
 }
 
 // Computed fresh on every Dashboard load — nothing is stored, so alerts
 // always reflect the current data and disappear once the cause is fixed.
-export function buildDashboardAlerts({ today, availableCredits, patients, colContext, hpeAwaiting = [], lastBackup }: AlertSources): DashboardAlert[] {
+export function buildDashboardAlerts({ today, availableCredits, patients, colContext, hpeAwaiting = [], ungraded = [], lastBackup }: AlertSources): DashboardAlert[] {
   const alerts: DashboardAlert[] = [];
 
   // COL credits about to be wasted, soonest first.
@@ -130,6 +136,22 @@ export function buildDashboardAlerts({ today, availableCredits, patients, colCon
       tone: oldest > HPE_OVERDUE_DAYS ? 'rose' : 'amber',
       title: `${plural(hpeAwaiting.length, 'HPE report')} awaited`,
       detail: `${shown}${hpeAwaiting.length > 3 ? ` +${hpeAwaiting.length - 3} more` : ''}${oldest > 0 ? ` — oldest sent ${oldest} days ago` : ''}`,
+    });
+  }
+
+  const gradeDue = ungraded.filter((u) => {
+    if (!u.surgeryDate) return false;
+    const age = daysBetween(u.surgeryDate.substring(0, 10), today);
+    return age >= GRADE_DUE_DAYS && age <= GRADE_LOOKBACK_DAYS;
+  });
+  if (gradeDue.length > 0) {
+    const shown = gradeDue.slice(0, 3).map((u) => u.patientName).join(', ');
+    alerts.push({
+      id: 'grade_due',
+      kind: 'grade_due',
+      tone: 'sky',
+      title: `${plural(gradeDue.length, 'case')} due for 30-day outcome`,
+      detail: `${shown}${gradeDue.length > 3 ? ` +${gradeDue.length - 3} more` : ''} — record the complication grade (Clavien–Dindo) when you edit the surgery.`,
     });
   }
 

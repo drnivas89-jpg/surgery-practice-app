@@ -3,6 +3,7 @@ import { saveAs } from 'file-saver';
 import { Hospital, Patient, Surgery } from './types';
 import { formatDate, isHpeAwaiting, todayLocalDateStr } from './helpers';
 import { formatMonth } from './fees';
+import { clavienLabel } from './complications';
 
 export interface LogbookExportRow {
   surgery: Surgery;
@@ -33,7 +34,7 @@ function hpeText(h: HpeInfo | undefined): string {
 export function exportLogbookExcel(rows: LogbookExportRow[], hpeByPatient: Map<string, HpeInfo>, meta: { doctorName: string; qualifications: string }) {
   const sorted = [...rows].sort((a, b) => (a.surgery.surgery_date || '').localeCompare(b.surgery.surgery_date || ''));
 
-  const header = ['S.No', 'Date', 'Patient Name', 'Age/Sex', 'Case ID', 'Hospital', 'Diagnosis', 'Procedure', 'Type', 'Role', 'Anaesthesia', 'Outcome', 'HPE'];
+  const header = ['S.No', 'Date', 'Patient Name', 'Age/Sex', 'Case ID', 'Hospital', 'Diagnosis', 'Procedure', 'Type', 'Role', 'Anaesthesia', 'Outcome', 'Complication', 'HPE'];
   const body = sorted.map((r, i) => [
     i + 1,
     r.surgery.surgery_date ? formatDate(r.surgery.surgery_date) : '',
@@ -47,11 +48,12 @@ export function exportLogbookExcel(rows: LogbookExportRow[], hpeByPatient: Map<s
     r.surgery.role === 'assisted_by_me' ? 'Assisted' : 'Performed',
     r.surgery.anaesthesia_type || '',
     r.surgery.outcome || '',
+    clavienLabel(r.surgery.clavien_dindo),
     hpeText(r.patient ? hpeByPatient.get(r.patient.id) : undefined),
   ]);
   const title = ['Surgical Logbook', [meta.doctorName.trim(), meta.qualifications.trim()].filter(Boolean).join(', ')];
   const logSheet = XLSX.utils.aoa_to_sheet([title, [], header, ...body]);
-  logSheet['!cols'] = [6, 12, 22, 8, 12, 18, 26, 30, 10, 10, 12, 22, 30].map((wch) => ({ wch }));
+  logSheet['!cols'] = [6, 12, 22, 8, 12, 18, 26, 30, 10, 10, 12, 22, 16, 30].map((wch) => ({ wch }));
 
   const byMonth = new Map<string, LogbookExportRow[]>();
   sorted.forEach((r) => {

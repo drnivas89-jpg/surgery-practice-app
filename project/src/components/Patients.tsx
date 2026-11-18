@@ -11,7 +11,7 @@ import PatientDetail from './PatientDetail';
 import CaseInsights, { InsightCase } from './CaseInsights';
 
 type CaseRow = Patient & {
-  surgeries: Pick<Surgery, 'procedure_name' | 'procedure_category' | 'surgery_date' | 'procedure_notes' | 'role' | 'outcome' | 'created_at'>[];
+  surgeries: Pick<Surgery, 'procedure_name' | 'procedure_category' | 'surgery_date' | 'procedure_notes' | 'role' | 'outcome' | 'clavien_dindo' | 'created_at'>[];
   follow_ups: Pick<FollowUp, 'type' | 'report_number' | 'findings' | 'report_image_paths'>[];
 };
 
@@ -42,7 +42,7 @@ export default function Patients({ focusPatientId, onFocusHandled }: { focusPati
     const [{ data: p }, { data: h }] = await Promise.all([
       supabase
         .from('patients')
-        .select('*, hospital:hospitals(*), surgeries(procedure_name, procedure_category, surgery_date, procedure_notes, role, outcome, created_at), follow_ups(type, report_number, findings, report_image_paths)')
+        .select('*, hospital:hospitals(*), surgeries(*), follow_ups(type, report_number, findings, report_image_paths)')
         .order('surgery_date', { ascending: false, nullsFirst: false })
         .order('created_at', { ascending: false }),
       supabase.from('hospitals').select('*').order('name'),
@@ -94,6 +94,7 @@ export default function Patients({ focusPatientId, onFocusHandled }: { focusPati
       hospital: p.hospital?.name || '',
       role: s.role === 'assisted_by_me' ? 'assisted' : 'performed',
       outcome: s.outcome || '',
+      grade: s.clavien_dindo || '',
       hpe: hpe ? (isHpeAwaiting(hpe) ? 'awaiting' : 'received') : 'none',
     }];
   });

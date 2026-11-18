@@ -100,6 +100,9 @@ export interface Surgery {
   consent_image_paths: string[];
   role: 'done_by_me' | 'assisted_by_me' | null;
   outcome: string | null;
+  // Optional: absent until the 20261118 migration has been applied.
+  clavien_dindo?: string | null;
+  complications?: string | null;
   created_at: string;
 }
 
