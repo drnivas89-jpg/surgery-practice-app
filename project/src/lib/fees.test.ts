@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildMonthlyFeeTally, sumFeeTally } from './fees';
+import { buildMonthlyFeeTally, sumFeeTally, fyStartYear, fyLabel, fyMonths, buildFySummary } from './fees';
 
 describe('monthly fee tally', () => {
   const tally = buildMonthlyFeeTally({
@@ -30,5 +30,27 @@ describe('monthly fee tally', () => {
 
   it('never nets pending against excess', () => {
     expect(sumFeeTally(tally)).toEqual({ generated: 3800, received: 3500, pending: 700, excess: 400 });
+  });
+});
+
+describe('financial year', () => {
+  it('runs April to March', () => {
+    expect(fyStartYear('2026-04-01')).toBe(2026);
+    expect(fyStartYear('2027-03-31')).toBe(2026);
+    expect(fyStartYear('2026-03')).toBe(2025);
+    expect(fyLabel(2026)).toBe('FY 2026–27');
+    expect(fyLabel(2099)).toBe('FY 2099–00');
+    const months = fyMonths(2026);
+    expect([months[0], months[8], months[11], months.length]).toEqual(['2026-04', '2026-12', '2027-03', 12]);
+  });
+
+  it('rolls up months and hospitals', () => {
+    const t = (hospitalId: string, month: string, generated: number, received: number) =>
+      ({ hospitalId, month, generated, received, pending: Math.max(0, generated - received), excess: Math.max(0, received - generated) });
+    const fy = buildFySummary([t('a', '2026-03', 999, 999), t('a', '2026-04', 1000, 600), t('b', '2027-03', 500, 700), t('a', '2027-04', 5, 5)], 2026);
+    expect(fy.totals).toEqual({ generated: 1500, received: 1300, pending: 400, excess: 200 });
+    expect(fy.byHospital.map((h) => h.hospitalId)).toEqual(['b', 'a']);
+    expect(fy.byMonth[0].totals.received).toBe(600);
+    expect(fy.byMonth[11].totals.received).toBe(700);
   });
 });

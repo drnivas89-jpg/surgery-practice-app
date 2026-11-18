@@ -74,3 +74,43 @@ export function formatMonth(month: string): string {
   const [y, m] = month.split('-').map(Number);
   return new Date(y, m - 1, 1).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
 }
+
+// ---- Indian financial year (1 April – 31 March) ----
+
+/** Start year of the financial year a yyyy-mm(-dd) date falls in: 2027-02 -> 2026. */
+export function fyStartYear(date: string): number {
+  const [y, m] = date.split('-').map(Number);
+  return m >= 4 ? y : y - 1;
+}
+
+export const fyLabel = (start: number) => `FY ${start}–${String((start + 1) % 100).padStart(2, '0')}`;
+
+/** The twelve yyyy-mm months of a financial year, April first. */
+export function fyMonths(start: number): string[] {
+  return Array.from({ length: 12 }, (_, i) => {
+    const m = ((i + 3) % 12) + 1;
+    const y = m >= 4 ? start : start + 1;
+    return `${y}-${String(m).padStart(2, '0')}`;
+  });
+}
+
+export interface FySummary {
+  start: number;
+  totals: FeeTotals;
+  byMonth: { month: string; totals: FeeTotals }[];
+  byHospital: { hospitalId: string; totals: FeeTotals }[];
+}
+
+/** Roll the per-month tally up into one financial year. Pending/excess stay per-month, then summed. */
+export function buildFySummary(tally: MonthFeeTally[], start: number): FySummary {
+  const inFy = tally.filter((t) => fyStartYear(t.month) === start);
+  const hospitalIds = [...new Set(inFy.map((t) => t.hospitalId))];
+  return {
+    start,
+    totals: sumFeeTally(inFy),
+    byMonth: fyMonths(start).map((month) => ({ month, totals: sumFeeTally(inFy.filter((t) => t.month === month)) })),
+    byHospital: hospitalIds
+      .map((hospitalId) => ({ hospitalId, totals: sumFeeTally(inFy.filter((t) => t.hospitalId === hospitalId)) }))
+      .sort((a, b) => b.totals.received - a.totals.received),
+  };
+}

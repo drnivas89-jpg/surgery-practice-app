@@ -4,6 +4,7 @@ import { moveToBin, binParts } from '@/lib/recycleBin';
 import { Hospital, Patient, Payment, MonthlyEntry, RevenueTransaction } from '@/lib/types';
 import { formatCurrency, formatDate, todayLocalDateStr } from '@/lib/helpers';
 import { buildMonthlyFeeTally, sumFeeTally, formatMonth } from '@/lib/fees';
+import FinancialYearSummary from './FinancialYearSummary';
 import { IndianRupee, TrendingUp, Building2, Calendar, Plus, X, Trash2, Pencil, Activity, Receipt } from 'lucide-react';
 
 export default function Revenue() {
@@ -392,6 +393,8 @@ export default function Revenue() {
           </div>
         )}
       </div>
+
+      <FinancialYearSummary tally={selectedHospital === 'all' ? feeTally : feeTally.filter((t) => t.hospitalId === selectedHospital)} hospitalName={hospitalName} />
 
       {/* Hospital Breakdown */}
       <div className="bg-white rounded-xl border border-slate-200 p-5">
