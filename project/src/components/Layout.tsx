@@ -1,6 +1,7 @@
 import { ReactNode, useEffect, useState } from 'react';
 import { useAuth } from '@/lib/auth';
-import { LayoutDashboard, Users, Building2, DollarSign, LogOut, Stethoscope, FileBarChart, FileText, ClipboardList, Zap, Share2, KeyRound, X, CheckCircle2, AlertCircle, BookOpen, ChevronsLeft, ChevronsRight, Menu, DatabaseBackup, Search, Trash2, WifiOff } from 'lucide-react';
+import { LayoutDashboard, Users, Building2, DollarSign, LogOut, Stethoscope, FileBarChart, FileText, ClipboardList, Zap, Share2, KeyRound, X, CheckCircle2, AlertCircle, BookOpen, ChevronsLeft, ChevronsRight, Menu, DatabaseBackup, Search, Trash2, WifiOff, Sun, Moon, MonitorSmartphone } from 'lucide-react';
+import { useTheme } from '@/lib/theme';
 import { useOnline } from '@/lib/offline';
 import RecycleBinModal from './RecycleBinModal';
 import SearchPalette from './SearchPalette';
@@ -159,6 +160,9 @@ const ALL_ITEMS = navSections.flatMap((s) => s.items);
 export default function Layout({ current, onNavigate, onOpenPatient, children }: LayoutProps) {
   const { user, signOut } = useAuth();
   const online = useOnline();
+  const theme = useTheme();
+  const themeLabel = theme.choice === 'system' ? 'Auto' : theme.choice === 'dark' ? 'Dark' : 'Light';
+  const ThemeIcon = theme.choice === 'system' ? MonitorSmartphone : theme.choice === 'dark' ? Moon : Sun;
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
@@ -188,7 +192,7 @@ export default function Layout({ current, onNavigate, onOpenPatient, children }:
   const initial = (user?.email || '?').charAt(0).toUpperCase();
 
   const sidebar = (
-    <div className="flex h-full flex-col bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950 text-slate-300">
+    <div className="keep-dark flex h-full flex-col bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950 text-slate-300">
       <div className={`flex items-center border-b border-white/5 ${iconsOnly ? 'justify-center p-3' : 'gap-3 px-5 py-5'}`}>
         <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-sky-400 to-teal-500 flex items-center justify-center flex-shrink-0 shadow-lg shadow-sky-900/40">
           <Stethoscope className="w-5 h-5 text-white" />
@@ -294,6 +298,17 @@ export default function Layout({ current, onNavigate, onOpenPatient, children }:
           {iconsOnly && <CollapsedTooltip label="Recycle bin" />}
         </button>
         <button
+          onClick={theme.cycle}
+          aria-label={`Theme: ${themeLabel}`}
+          className={`group relative w-full flex items-center rounded-xl text-sm font-medium text-slate-400 hover:bg-white/5 hover:text-white transition ${
+            iconsOnly ? 'justify-center px-0 py-2.5' : 'gap-3 px-3 py-2.5'
+          }`}
+        >
+          <ThemeIcon className="w-4 h-4 flex-shrink-0" />
+          {!iconsOnly && `Theme: ${themeLabel}`}
+          {iconsOnly && <CollapsedTooltip label={`Theme: ${themeLabel}`} />}
+        </button>
+        <button
           onClick={() => setShowChangePassword(true)}
           aria-label="Change Password"
           className={`group relative w-full flex items-center rounded-xl text-sm font-medium text-slate-400 hover:bg-white/5 hover:text-white transition ${
@@ -338,7 +353,7 @@ export default function Layout({ current, onNavigate, onOpenPatient, children }:
 
       {/* Mobile top bar */}
       <header
-        className="lg:hidden sticky top-0 z-30 flex items-center gap-3 bg-slate-900 px-4 py-3 text-white shadow-md"
+        className="keep-dark lg:hidden sticky top-0 z-30 flex items-center gap-3 bg-slate-900 px-4 py-3 text-white shadow-md"
         style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.75rem)' }}
       >
         <button onClick={() => setMobileOpen(true)} className="p-1.5 -ml-1.5 rounded-lg hover:bg-white/10" aria-label="Open menu">

@@ -49,7 +49,7 @@ export default function ImageGallery({ images, startIndex = 0, onClose }: { imag
   const btn = 'inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-white/90 hover:bg-white/10 transition disabled:opacity-40';
 
   return (
-    <div className="fixed inset-0 z-[70] bg-slate-950/95 flex flex-col" role="dialog" aria-label="Photo viewer">
+    <div className="keep-dark fixed inset-0 z-[70] bg-slate-950/95 flex flex-col" role="dialog" aria-label="Photo viewer">
       <div className="flex items-center gap-1 px-3 py-2 text-white" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.5rem)' }}>
         <p className="text-sm text-white/70 px-2 flex-1 truncate">{index + 1} / {images.length}</p>
         {images.length > 1 && (
