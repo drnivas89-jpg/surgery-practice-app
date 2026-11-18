@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.surgerypractice.app",
+      "sha256_cert_fingerprints": [
+        "8A:DA:F4:97:B2:D5:7B:97:01:CD:F7:DC:4C:B7:8D:18:93:C5:9C:80:06:71:47:EC:AD:F6:9C:DD:92:A6:61:0D"
+      ]
+    }
+  }
+]
