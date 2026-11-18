@@ -22,6 +22,7 @@ import PresentDutyPrompt from './PresentDutyPrompt';
 import GovHolidays from './GovHolidays';
 import MissingDaysModal from './MissingDaysModal';
 import LeaveBalance from './LeaveBalance';
+import ClassCalendar from './ClassCalendar';
 import { useUserSettings } from '@/lib/leaveBalance';
 
 const MONTHS = [
@@ -35,6 +36,7 @@ export default function Hospitals() {
   const [entries, setEntries] = useState<MonthlyEntry[]>([]);
   const [attendance, setAttendance] = useState<Attendance[]>([]);
   const userSettings = useUserSettings();
+  const [classView, setClassView] = useState<'list' | 'calendar'>('list');
   const [patients, setPatients] = useState<Patient[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [revenueTransactions, setRevenueTransactions] = useState<RevenueTransaction[]>([]);
@@ -576,13 +578,23 @@ export default function Hospitals() {
             <GraduationCap className="w-4 h-4 text-violet-500" />
             <h2 className="font-semibold text-slate-700">Classes / Teaching</h2>
           </div>
+          <div className="flex items-center gap-2">
+          <div className="inline-flex rounded-lg bg-slate-100 p-0.5 text-xs font-semibold" role="tablist" aria-label="Class view">
+            {(['list', 'calendar'] as const).map((v) => (
+              <button key={v} role="tab" aria-selected={classView === v} onClick={() => setClassView(v)} className={`px-2.5 py-1 rounded-md capitalize transition ${classView === v ? 'bg-white text-violet-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>{v}</button>
+            ))}
+          </div>
           <button
             onClick={() => { resetClassForm(); setShowClassForm(true); }}
             className="flex items-center gap-1.5 text-xs font-medium text-violet-600 bg-violet-50 hover:bg-violet-100 px-3 py-1.5 rounded-lg transition"
           >
             <Plus className="w-3.5 h-3.5" /> Add Class
           </button>
+          </div>
         </div>
+        {classView === 'calendar' && user ? (
+          <ClassCalendar classes={classes} userId={user.id} onEdit={openEditClass} onChanged={load} />
+        ) : (<>
         <div className="relative mb-4">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
           <input
@@ -651,6 +663,7 @@ export default function Hospitals() {
             </table>
           </div>
         )}
+        </>)}
       </div>
 
       {/* Layer 1 / Layer 2: Hospital-wise attendance & activity */}
