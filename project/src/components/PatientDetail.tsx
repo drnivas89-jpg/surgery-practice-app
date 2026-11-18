@@ -12,9 +12,10 @@ import NoteTemplates from './NoteTemplates';
 import { CLAVIEN_DINDO, clavienLabel, isMajorComplication } from '@/lib/complications';
 import {
   ArrowLeft, Pencil, Activity, UserRound, FlaskConical, IndianRupee, Plus, X,
-  Trash2, Settings, TestTube, HeartPulse, ClipboardCheck, MessageSquare, Paperclip, Wrench,
+  Trash2, Settings, TestTube, HeartPulse, ClipboardCheck, MessageSquare, Paperclip, Wrench, Presentation,
 } from 'lucide-react';
 
+const PRESENTER_KEY = 'slidesPresenter';
 const PROCEDURE_CATEGORIES: ProcedureCategory[] = ['Major', 'Minor', 'Bedside', 'Endoscopy', 'Others'];
 // Major surgeries are reserved for IP patients — OP/Opinion consults can
 // only log day-care/minor interventions (Minor, Bedside, Endoscopy, Others).
@@ -255,6 +256,29 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
     setShowSurgeryForm(false);
     resetSurgeryForm();
     load();
+  };
+
+  const [slidesFor, setSlidesFor] = useState<string | null>(null);
+  const makeSlides = async (s: Surgery) => {
+    if (!patient) return;
+    let presenter = '';
+    try { presenter = localStorage.getItem(PRESENTER_KEY) || ''; } catch { /* storage unavailable */ }
+    if (!presenter) {
+      presenter = (prompt('Presenter name for the title slide (e.g. Dr. A. Kumar, MS)', '') || '').trim();
+      try { if (presenter) localStorage.setItem(PRESENTER_KEY, presenter); } catch { /* storage unavailable */ }
+    }
+    setSlidesFor(s.id);
+    try {
+      const { downloadCaseSlides } = await import('@/lib/caseSlides');
+      await downloadCaseSlides({
+        patient, surgery: s, investigations, visits: followUpVisits, presenter,
+        hpe: followUps.find((f) => f.type === 'biopsy' && (f.findings || '').trim()),
+      });
+    } catch (err) {
+      alert(`Couldn't make the slides: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSlidesFor(null);
+    }
   };
 
   const handleDeleteSurgery = async (id: string) => {
@@ -692,6 +716,7 @@ export default function PatientDetail({ patientId, onBack, onEdit, onNewVisit }:
                     {s.surgery_type && <span className="text-xs font-medium bg-sky-50 text-sky-600 px-2 py-0.5 rounded">{s.surgery_type}</span>}
                     <span className={`text-xs font-medium px-2 py-0.5 rounded ${s.role === 'assisted_by_me' ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'}`}>{s.role === 'assisted_by_me' ? 'Assisted' : 'Done by me'}</span>
                     <div className="ml-auto flex items-center gap-1">
+                      <button onClick={() => makeSlides(s)} disabled={slidesFor === s.id} className="text-slate-400 hover:text-teal-600 transition p-1 disabled:opacity-50" title="Download case presentation slides (no name or case ID)" aria-label="Case slides"><Presentation className="w-3.5 h-3.5" /></button>
                       <button onClick={() => openEditSurgery(s)} className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-sky-500 transition p-1"><Pencil className="w-3.5 h-3.5" /></button>
                       <button onClick={() => handleDeleteSurgery(s.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition p-1"><Trash2 className="w-3.5 h-3.5" /></button>
                     </div>
