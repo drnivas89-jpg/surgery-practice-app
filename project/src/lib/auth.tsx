@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, useRef, ReactNode } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from './supabase';
+import { clearOfflineData } from './offline';
 import { Lock } from 'lucide-react';
 
 interface AuthContextValue {
@@ -45,6 +46,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data: listener } = supabase.auth.onAuthStateChange((event, newSession) => {
       setSession(newSession);
       if (!newSession) setLocked(false);
+      if (event === 'SIGNED_OUT') clearOfflineData();
       if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true);
     });
 

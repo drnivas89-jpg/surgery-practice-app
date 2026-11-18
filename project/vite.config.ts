@@ -9,6 +9,24 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      workbox: {
+        // Offline reading: keep the last copy of every data request so pages
+        // still open without internet. The network is always tried first, so
+        // online use always shows live data. Cleared on sign-out (src/lib/offline.ts).
+        runtimeCaching: [
+          {
+            urlPattern: ({ url }) => url.pathname.startsWith('/rest/v1/'),
+            method: 'GET',
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'supabase-data',
+              networkTimeoutSeconds: 8,
+              expiration: { maxEntries: 400, maxAgeSeconds: 60 * 60 * 24 * 30 },
+              cacheableResponse: { statuses: [200] },
+            },
+          },
+        ],
+      },
       manifest: {
         id: '/',
         name: 'Surgery Practice Management',

@@ -1,6 +1,7 @@
 import { ReactNode, useEffect, useState } from 'react';
 import { useAuth } from '@/lib/auth';
-import { LayoutDashboard, Users, Building2, DollarSign, LogOut, Stethoscope, FileBarChart, FileText, ClipboardList, Zap, Share2, KeyRound, X, CheckCircle2, AlertCircle, BookOpen, ChevronsLeft, ChevronsRight, Menu, DatabaseBackup, Search, Trash2 } from 'lucide-react';
+import { LayoutDashboard, Users, Building2, DollarSign, LogOut, Stethoscope, FileBarChart, FileText, ClipboardList, Zap, Share2, KeyRound, X, CheckCircle2, AlertCircle, BookOpen, ChevronsLeft, ChevronsRight, Menu, DatabaseBackup, Search, Trash2, WifiOff } from 'lucide-react';
+import { useOnline } from '@/lib/offline';
 import RecycleBinModal from './RecycleBinModal';
 import SearchPalette from './SearchPalette';
 import BackupModal from './BackupModal';
@@ -157,6 +158,7 @@ const ALL_ITEMS = navSections.flatMap((s) => s.items);
 
 export default function Layout({ current, onNavigate, onOpenPatient, children }: LayoutProps) {
   const { user, signOut } = useAuth();
+  const online = useOnline();
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
@@ -353,6 +355,12 @@ export default function Layout({ current, onNavigate, onOpenPatient, children }:
 
       <div className={`transition-[margin] duration-300 ease-in-out ${collapsed ? 'lg:ml-[76px]' : 'lg:ml-64'}`}>
         <main className="px-4 py-5 sm:px-6 sm:py-7 max-w-7xl mx-auto" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 1.5rem)' }}>
+          {!online && (
+            <div role="status" className="mb-4 flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <WifiOff className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <span><strong>You're offline.</strong> Showing the data last loaded on this device — new changes can't be saved until you're back online.</span>
+            </div>
+          )}
           {children}
         </main>
       </div>
